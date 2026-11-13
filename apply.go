@@ -39,6 +39,7 @@ type edit struct {
 	old, new string // the text replaced and the text put there (\n line endings)
 	off      int    // where the change starts in the buffer, kept right as later blocks edit
 	count    int    // occurrences replaced (SEARCH all)
+	pulled   bool   // a deleted last line took the line break before it
 }
 
 // failure is a block that can't be applied: what's wrong, and lines that
@@ -217,6 +218,9 @@ func (s *session) apply(b *block) {
 			last--
 		}
 		end := whole.lineEnd(last - 1)
+		if end > lo && f.buf[end-1] == '\r' { // the last line keeps its \r\n
+			end--
+		}
 		text := b.New
 		oldFirst := whole.line(def.Line - 1)
 		nl := strings.Split(b.New, "\n")
@@ -264,25 +268,37 @@ func (s *session) apply(b *block) {
 		}
 		// one pass over the buffer, so many occurrences don't take
 		// quadratic time
+		type run struct{ raw, start, end int }
+		var runs []run
+		for _, o := range offs {
+			raw, end := lo+o, lo+o+len(b.Old)
+			start := raw
+			if !b.HasNew {
+				start, end = withLineBreak(f.buf, raw, end)
+			}
+			if n := len(runs); n > 0 && start < runs[n-1].end {
+				// a deleted last line right after another deleted line:
+				// one run, which then takes the line break before it
+				p := &runs[n-1]
+				p.start, p.end = withLineBreak(f.buf, p.raw, end)
+				continue
+			}
+			runs = append(runs, run{raw, start, end})
+		}
 		var sb strings.Builder
 		var cuts []cut
 		prev := 0
-		for _, o := range offs {
-			start, end := lo+o, lo+o+len(b.Old)
-			if !b.HasNew {
-				start, end = withLineBreak(f.buf, start, end)
-			}
-			start = max(start, prev)
-			text := crText(f.buf, start, end, b.New)
-			sb.WriteString(f.buf[prev:start])
+		for _, r := range runs {
+			text := crText(f.buf, r.start, r.end, b.New)
+			sb.WriteString(f.buf[prev:r.start])
 			sb.WriteString(text)
-			cuts = append(cuts, cut{start, end, len(text)})
-			prev = end
+			cuts = append(cuts, cut{r.start, r.end, len(text)})
+			prev = r.end
 		}
 		sb.WriteString(f.buf[prev:])
 		f.shift(cuts)
 		f.buf = sb.String()
-		f.edits = append(f.edits, &edit{b: b, old: b.Old, new: b.New, off: cuts[0].start, count: len(offs)})
+		f.edits = append(f.edits, &edit{b: b, old: b.Old, new: b.New, off: cuts[0].start, count: len(offs), pulled: runs[0].start < runs[0].raw})
 		if b.Old == b.New {
 			f.note(fmt.Sprintf("block %d: the new text is the same as the old", b.N))
 		}
@@ -362,6 +378,7 @@ func inScope(name string) string {
 
 // replace puts sp into f's buffer and records the edit.
 func (s *session) replace(f *file, b *block, sp span, count int) {
+	raw := sp.start
 	if !b.HasNew {
 		sp.start, sp.end = withLineBreak(f.buf, sp.start, sp.end)
 	}
@@ -369,7 +386,7 @@ func (s *session) replace(f *file, b *block, sp span, count int) {
 	old := f.buf[sp.start:sp.end]
 	f.shift([]cut{{sp.start, sp.end, len(sp.text)}})
 	f.buf = f.buf[:sp.start] + sp.text + f.buf[sp.end:]
-	f.edits = append(f.edits, &edit{b: b, old: old, new: sp.text, off: sp.start, count: count})
+	f.edits = append(f.edits, &edit{b: b, old: old, new: sp.text, off: sp.start, count: count, pulled: sp.start < raw})
 	if old == sp.text {
 		f.note(fmt.Sprintf("block %d: the new text is the same as the old", b.N))
 	}
@@ -772,6 +789,7 @@ func (s *session) write() (written []*file, err error) {
 			}
 		}
 		if from == 0 { // nothing was written: the folders go too, if empty
+			sort.Slice(made, func(i, j int) bool { return len(made[i]) > len(made[j]) }) // deepest first
 			for _, d := range made {
 				os.Remove(d)
 			}

@@ -15,7 +15,7 @@ import (
 	"golang.org/x/term"
 )
 
-const version = "0.1.0"
+const version = "0.1.1"
 
 type options struct {
 	dry, diff, plain bool
@@ -209,7 +209,7 @@ func render(out *bufio.Writer, p painter, fr *fileReport, diff bool) {
 	if diff {
 		for _, e := range f.edits {
 			line := strings.Count(f.buf[:min(e.off, len(f.buf))], "\n") + 1
-			if strings.HasPrefix(e.old, "\n") { // a deleted last line took the line break before it
+			if e.pulled { // a deleted last line took the line break before it
 				line++
 			}
 			head := fmt.Sprintf("block %d at L%d", e.b.N, line)
@@ -217,7 +217,11 @@ func render(out *bufio.Writer, p painter, fr *fileReport, diff bool) {
 				head += fmt.Sprintf(", %d times", e.count)
 			}
 			fmt.Fprintf(out, "  %s\n", p.dim(head+":"))
-			if old := strings.TrimPrefix(strings.TrimSuffix(e.old, "\n"), "\n"); e.old != "" {
+			old := strings.TrimSuffix(e.old, "\n")
+			if e.pulled {
+				old = strings.TrimPrefix(strings.TrimPrefix(old, "\r"), "\n")
+			}
+			if e.old != "" {
 				for _, l := range strings.Split(old, "\n") {
 					fmt.Fprintf(out, "    %s\n", p.verb("removed", "- "+strings.TrimSuffix(l, "\r")))
 				}

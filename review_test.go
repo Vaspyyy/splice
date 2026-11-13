@@ -490,6 +490,59 @@ func TestHardLinkKeepsSetgid(t *testing.T) {
 	}
 }
 
+// The cases below are from Opus 5.5's final re-check of 0a73108.
+
+func TestWholeDefinitionKeepsLastCRLF(t *testing.T) {
+	dir := tree(t, map[string]string{"x.go": "package x\n\nfunc a() {\r\n\treturn\r\n}\r\n\nfunc b() {}\n"})
+	if out, code := splice(t, dir, "x.go:a\n<<<<<<< SEARCH\n=======\nfunc a() {\n\tprintln()\n}\n>>>>>>> REPLACE\n"); code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if got := read(t, dir, "x.go"); got != "package x\n\nfunc a() {\r\n\tprintln()\r\n}\r\n\nfunc b() {}\n" {
+		t.Errorf("x.go = %q", got)
+	}
+}
+
+func TestSearchAllDeletesLastLines(t *testing.T) {
+	dir := tree(t, map[string]string{"a.txt": "b\na\na", "c.txt": "x\na"})
+	out, code := splice(t, dir, "a.txt\n<<<<<<< SEARCH all\na\n=======\n>>>>>>> REPLACE\nc.txt\n<<<<<<< SEARCH all\na\n=======\n>>>>>>> REPLACE\n", "--diff")
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if got := read(t, dir, "a.txt"); got != "b" {
+		t.Errorf("a.txt = %q", got)
+	}
+	wants(t, out, "c.txt\n  outside definitions L1\n  block 2 at L2:\n    - a\n")
+}
+
+func TestDiffOfCRLFLastLineDeletion(t *testing.T) {
+	dir := tree(t, map[string]string{"m.txt": "a\nb\r\nc"})
+	out, _ := splice(t, dir, "m.txt\n<<<<<<< SEARCH\nc\n=======\n>>>>>>> REPLACE\n", "--diff")
+	wants(t, out, "block 1 at L3:\n    - c\n")
+	if got := read(t, dir, "m.txt"); got != "a\nb" {
+		t.Errorf("m.txt = %q", got)
+	}
+}
+
+func TestNestedNewFoldersGo(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write to a read-only folder")
+	}
+	dir := tree(t, map[string]string{"ro/keep": "k\n"})
+	ro := filepath.Join(dir, "ro")
+	if err := os.Chmod(ro, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(ro, 0o755) })
+	empty := "<<<<<<< SEARCH\n=======\nx\n>>>>>>> REPLACE\n"
+	out, code := splice(t, dir, "n/x.txt\n"+empty+"n/b/y.txt\n"+empty+"ro/z.txt\n"+empty)
+	if code != 1 || !strings.Contains(out, "nothing written") {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "n")); err == nil {
+		t.Errorf("folder n was left behind")
+	}
+}
+
 // TestInnermostAll checks the one-pass lookup against ref.Innermost.
 func TestInnermostAll(t *testing.T) {
 	rng := rand.New(rand.NewSource(2))
