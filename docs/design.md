@@ -92,7 +92,7 @@ EOF
 | `path:104` | text | replace it inside the innermost definition containing line 104 |
 | `path:81-200` | text | replace it inside lines 81 to 200 |
 | `path:Name` or `path:104` | empty | replace the whole definition (its defining line to its last line, without blank lines at its end) with the new text |
-| `path` (doesn't exist) | empty | create the file with the new text |
+| `path` (doesn't exist, or is empty) | empty | create the file with the new text (or fill the empty one) |
 
 Any header plus `SEARCH all`: replace every exact occurrence in that scope, at
 least one. (The tolerant matches below are for single occurrences only.)

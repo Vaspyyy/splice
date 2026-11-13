@@ -80,17 +80,20 @@ func exactAll(s, old string) []int {
 }
 
 // aligned drops the matches of an old text that starts with spaces or tabs
-// where it starts inside a run of them: "    foo" doesn't match the end of
-// "        foo", which is a line with other indentation, not this one.
+// where it starts inside a line's indentation: "    foo" doesn't match the
+// end of "        foo", which is a line with other indentation, not this
+// one. Spaces later in a line match as usual ("x := 1   // one").
 func aligned(s, old string, offs []int) []int {
 	if old == "" || old[0] != ' ' && old[0] != '\t' {
 		return offs
 	}
 	out := offs[:0:0]
 	for _, o := range offs {
-		if o == 0 || s[o-1] != ' ' && s[o-1] != '\t' {
-			out = append(out, o)
+		ls := strings.LastIndexByte(s[:o], '\n') + 1
+		if o > ls && strings.TrimLeft(s[ls:o], " \t") == "" {
+			continue // starts inside the line's indentation
 		}
+		out = append(out, o)
 	}
 	return out
 }
@@ -128,12 +131,11 @@ func tolerant(scope *lineIndex, old, new string) (spans []span, err error) {
 			ok = trimRight(scope.line(i+k)) == trimRight(ol[k])
 		}
 		if ok {
-			text, cr := keepCR(scope, i, n, new)
 			note := "matched ignoring spaces at the ends of lines"
-			if cr {
-				note = "matched ignoring the \\r of the file's \\r\\n line endings (kept in the new text)"
+			if hasCR(scope, i, n) {
+				note = `matched ignoring \r and spaces at the ends of lines (a line ending in \r\n keeps it)`
 			}
-			spans = append(spans, span{start: scope.starts[i], end: scope.lineEnd(i + n - 1), text: text, note: note})
+			spans = append(spans, span{start: scope.starts[i], end: endBeforeCR(scope, i+n-1), text: new, note: note})
 		}
 	}
 	if len(spans) > 0 {
@@ -168,25 +170,31 @@ func tolerant(scope *lineIndex, old, new string) (spans []span, err error) {
 			if text, err = reindent(new, c.prefix, c.add); err != nil {
 				return nil, err
 			}
-			text, _ = keepCR(scope, c.i, n, text)
 		}
-		spans = append(spans, span{start: scope.starts[c.i], end: scope.lineEnd(c.i + n - 1), text: text, note: "matched " + describeShift(c.prefix, c.add)})
+		spans = append(spans, span{start: scope.starts[c.i], end: endBeforeCR(scope, c.i+n-1), text: text, note: "matched " + describeShift(c.prefix, c.add)})
 	}
 	return spans, nil
 }
 
-// keepCR gives the new text the \r line endings of the n lines from line i
-// it replaces, when all of them have one (a file with mixed line endings).
-func keepCR(scope *lineIndex, i, n int, text string) (string, bool) {
+// hasCR tells whether any of the n lines from line i ends in \r (a file
+// with mixed line endings).
+func hasCR(scope *lineIndex, i, n int) bool {
 	for k := 0; k < n; k++ {
-		if !strings.HasSuffix(scope.line(i+k), "\r") {
-			return text, false
+		if strings.HasSuffix(scope.line(i+k), "\r") {
+			return true
 		}
 	}
-	if text == "" {
-		return text, true
+	return false
+}
+
+// endBeforeCR is where line i ends, before its \r if it has one, so that a
+// replacement keeps the line's \r\n.
+func endBeforeCR(scope *lineIndex, i int) int {
+	end := scope.lineEnd(i)
+	if end > scope.starts[i] && scope.text[end-1] == '\r' {
+		end--
 	}
-	return strings.ReplaceAll(text, "\n", "\r\n") + "\r", true
+	return end
 }
 
 // shifted tells whether the lines of scope from line i are ol with the

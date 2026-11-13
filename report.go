@@ -36,19 +36,111 @@ func diffLines(a, b []string) []hunk {
 	}
 	del, ins, ok := myers(A, B)
 	if !ok {
-		return []hunk{{pre, len(A), pre, len(B)}}
+		// too many changes for one diff: split at lines that occur once on
+		// both sides, and diff the pieces between them
+		return anchored(A, B, pre)
+	}
+	return hunksOf(del, ins, pre, pre)
+}
+
+// anchored diffs A and B piece by piece between anchors: lines that occur
+// exactly once in each, kept in an order both sides agree on (the longest
+// increasing run, as in patience diff). base is where A and B start in the
+// whole texts. A piece that is still too big becomes one hunk.
+func anchored(A, B []string, base int) []hunk {
+	count := map[string][2]int{}
+	at := map[string][2]int{}
+	for i, l := range A {
+		c := count[l]
+		c[0]++
+		count[l] = c
+		p := at[l]
+		p[0] = i
+		at[l] = p
+	}
+	for j, l := range B {
+		c := count[l]
+		c[1]++
+		count[l] = c
+		p := at[l]
+		p[1] = j
+		at[l] = p
+	}
+	var pairs [][2]int // (i, j) of the unique lines, in A's order
+	for i, l := range A {
+		if c := count[l]; c[0] == 1 && c[1] == 1 {
+			pairs = append(pairs, [2]int{i, at[l][1]})
+		}
+	}
+	anchors := increasing(pairs)
+	if len(anchors) == 0 {
+		return []hunk{{base, len(A), base, len(B)}}
 	}
 	var hs []hunk
-	for i, j := 0, 0; i < len(A) || j < len(B); {
-		if i < len(A) && j < len(B) && !del[i] && !ins[j] {
+	ai, bj := 0, 0
+	for _, p := range append(anchors, [2]int{len(A), len(B)}) {
+		if p[0] > ai || p[1] > bj {
+			a, b := A[ai:p[0]], B[bj:p[1]]
+			if del, ins, ok := myers(a, b); ok {
+				hs = append(hs, hunksOf(del, ins, base+ai, base+bj)...)
+			} else {
+				hs = append(hs, hunk{base + ai, len(a), base + bj, len(b)})
+			}
+		}
+		ai, bj = p[0]+1, p[1]+1
+	}
+	return hs
+}
+
+// increasing keeps the longest run of pairs whose second values increase
+// (pairs come sorted by their first value).
+func increasing(pairs [][2]int) [][2]int {
+	var tails []int // index into pairs of the last pair of each run length
+	prev := make([]int, len(pairs))
+	for k, p := range pairs {
+		lo, hi := 0, len(tails)
+		for lo < hi {
+			m := (lo + hi) / 2
+			if pairs[tails[m]][1] < p[1] {
+				lo = m + 1
+			} else {
+				hi = m
+			}
+		}
+		prev[k] = -1
+		if lo > 0 {
+			prev[k] = tails[lo-1]
+		}
+		if lo == len(tails) {
+			tails = append(tails, k)
+		} else {
+			tails[lo] = k
+		}
+	}
+	if len(tails) == 0 {
+		return nil
+	}
+	out := make([][2]int, len(tails))
+	for k, i := len(tails)-1, tails[len(tails)-1]; i >= 0; k, i = k-1, prev[i] {
+		out[k] = pairs[i]
+	}
+	return out
+}
+
+// hunksOf turns marked lines into hunks; ai and bj are where the marked
+// slices start in the whole texts.
+func hunksOf(del, ins []bool, ai, bj int) []hunk {
+	var hs []hunk
+	for i, j := 0, 0; i < len(del) || j < len(ins); {
+		if i < len(del) && j < len(ins) && !del[i] && !ins[j] {
 			i, j = i+1, j+1
 			continue
 		}
-		h := hunk{os: pre + i, ns: pre + j}
-		for i < len(A) && del[i] {
+		h := hunk{os: ai + i, ns: bj + j}
+		for i < len(del) && del[i] {
 			i, h.oc = i+1, h.oc+1
 		}
-		for j < len(B) && ins[j] {
+		for j < len(ins) && ins[j] {
 			j, h.nc = j+1, h.nc+1
 		}
 		hs = append(hs, h)

@@ -208,18 +208,24 @@ func render(out *bufio.Writer, p painter, fr *fileReport, diff bool) {
 	}
 	if diff {
 		for _, e := range f.edits {
-			head := fmt.Sprintf("block %d at L%d", e.b.N, e.line)
+			line := strings.Count(f.buf[:min(e.off, len(f.buf))], "\n") + 1
+			if strings.HasPrefix(e.old, "\n") { // a deleted last line took the line break before it
+				line++
+			}
+			head := fmt.Sprintf("block %d at L%d", e.b.N, line)
 			if e.count > 1 {
 				head += fmt.Sprintf(", %d times", e.count)
 			}
 			fmt.Fprintf(out, "  %s\n", p.dim(head+":"))
-			if e.old != "" || !f.created {
-				for _, l := range strings.Split(e.old, "\n") {
-					fmt.Fprintf(out, "    %s\n", p.verb("removed", "- "+l))
+			if old := strings.TrimPrefix(strings.TrimSuffix(e.old, "\n"), "\n"); e.old != "" {
+				for _, l := range strings.Split(old, "\n") {
+					fmt.Fprintf(out, "    %s\n", p.verb("removed", "- "+strings.TrimSuffix(l, "\r")))
 				}
 			}
-			for _, l := range strings.Split(e.new, "\n") {
-				fmt.Fprintf(out, "    %s\n", p.verb("added", "+ "+l))
+			if e.b.HasNew {
+				for _, l := range strings.Split(e.new, "\n") {
+					fmt.Fprintf(out, "    %s\n", p.verb("added", "+ "+strings.TrimSuffix(l, "\r")))
+				}
 			}
 		}
 	}

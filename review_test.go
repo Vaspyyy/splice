@@ -4,6 +4,7 @@ package main
 // Sonnet 5.5 and GPT-6.1 Terra, 2026-11-13).
 
 import (
+	"fmt"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -201,7 +202,7 @@ func TestMixedLineEndings(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
-	wants(t, out, `ignoring the \r`)
+	wants(t, out, `ignoring \r and spaces`)
 	if got := read(t, dir, "m.txt"); got != "X\r\nY\r\nc\n" {
 		t.Errorf("m.txt = %q", got)
 	}
@@ -237,6 +238,197 @@ func TestLineHeaders(t *testing.T) {
 			t.Errorf("%s: exit %d:\n%s", c.header, code, out)
 		}
 	}
+}
+
+// The cases below are from the re-checks of c7c713d (Opus 5.5).
+
+func TestDateHeading(t *testing.T) {
+	dir := tree(t, map[string]string{"CHANGELOG.md": "# Log\n\n## 2026-11-13\n\nold\n"})
+	if out, code := splice(t, dir, "CHANGELOG.md:2026-11-13\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE\n"); code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if got := read(t, dir, "CHANGELOG.md"); !strings.Contains(got, "\nnew\n") {
+		t.Errorf("CHANGELOG.md = %q", got)
+	}
+}
+
+func TestSpacesInsideALine(t *testing.T) {
+	dir := tree(t, map[string]string{"c.go": "package c\n\nvar x = 1   // one\n"})
+	if out, code := splice(t, dir, "c.go\n<<<<<<< SEARCH\n   // one\n=======\n // the first\n>>>>>>> REPLACE\n"); code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if got := read(t, dir, "c.go"); got != "package c\n\nvar x = 1 // the first\n" {
+		t.Errorf("c.go = %q", got)
+	}
+}
+
+func TestNewLinesInACRLFLine(t *testing.T) {
+	dir := tree(t, map[string]string{"m.txt": "x\na\r\nb\n"})
+	if out, code := splice(t, dir, "m.txt\n<<<<<<< SEARCH\na\n=======\na\nb2\n>>>>>>> REPLACE\n"); code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if got := read(t, dir, "m.txt"); got != "x\na\r\nb2\r\nb\n" {
+		t.Errorf("m.txt = %q", got)
+	}
+}
+
+func TestCreateTwoSpellings(t *testing.T) {
+	dir := tree(t, map[string]string{"real/keep.txt": "k\n"})
+	if err := os.Symlink("real", filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	out, code := splice(t, dir, "link/new/n.txt\n<<<<<<< SEARCH\n=======\nfirst\n>>>>>>> REPLACE\nreal/new/n.txt\n<<<<<<< SEARCH\n=======\nsecond\n>>>>>>> REPLACE\n")
+	if code != 1 || !strings.Contains(out, "exists") {
+		t.Errorf("exit %d:\n%s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "real/new")); err == nil {
+		t.Errorf("real/new was made")
+	}
+}
+
+func TestNoFoldersLeftWhenNothingIsWritten(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write to a read-only folder")
+	}
+	dir := tree(t, map[string]string{"ro/b.txt": "b\n"})
+	ro := filepath.Join(dir, "ro")
+	if err := os.Chmod(ro, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(ro, 0o755) })
+	out, code := splice(t, dir, "a/b/new.txt\n<<<<<<< SEARCH\n=======\nx\n>>>>>>> REPLACE\nro/b.txt\n<<<<<<< SEARCH\nb\n=======\nB\n>>>>>>> REPLACE\n")
+	if code != 1 || !strings.Contains(out, "nothing written") {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "a")); err == nil {
+		t.Errorf("folder a was left behind")
+	}
+}
+
+func TestOverlapHint(t *testing.T) {
+	dir := tree(t, map[string]string{"a.txt": "aaa\n"})
+	out, _ := splice(t, dir, "a.txt\n<<<<<<< SEARCH\naa\n=======\nX\n>>>>>>> REPLACE\n")
+	if !strings.Contains(out, "overlap") || strings.Contains(out, `or use "SEARCH all"`) {
+		t.Errorf("output:\n%s", out)
+	}
+}
+
+func TestDiffLinesEdges(t *testing.T) {
+	dir := tree(t, map[string]string{"a.txt": "1\n2\n3\n4\n5\n"})
+	// block 2 inserts a line right before block 1's line
+	out, _ := splice(t, dir, "a.txt\n<<<<<<< SEARCH\n4\n=======\nfour\n>>>>>>> REPLACE\n<<<<<<< SEARCH\n3\n=======\n3\n3b\n>>>>>>> REPLACE\n", "--diff")
+	wants(t, out, "block 1 at L5:", "block 2 at L3:")
+	// block 2 deletes block 1's line: block 1 is shown where it went
+	dir = tree(t, map[string]string{"a.txt": "1\n2\n3\n"})
+	out, _ = splice(t, dir, "a.txt\n<<<<<<< SEARCH\n3\n=======\nthree\n>>>>>>> REPLACE\n<<<<<<< SEARCH\n2\nthree\n=======\n>>>>>>> REPLACE\n", "--diff")
+	wants(t, out, "block 1 at L2:", "block 2 at L2:")
+	if strings.Contains(out, "    + \n") {
+		t.Errorf("a deletion shows an empty + line:\n%s", out)
+	}
+}
+
+func TestSearchAllMany(t *testing.T) {
+	src := strings.Repeat("x = old\n", 20000)
+	dir := tree(t, map[string]string{"a.txt": src})
+	out, code := splice(t, dir, "a.txt\n<<<<<<< SEARCH all\nold\n=======\nnew\n>>>>>>> REPLACE\n", "--diff")
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	wants(t, out, "block 1 at L1, 20000 times:")
+	if got := read(t, dir, "a.txt"); got != strings.Repeat("x = new\n", 20000) {
+		t.Errorf("a.txt is wrong")
+	}
+}
+
+func TestNewFileMode(t *testing.T) {
+	dir := tree(t, map[string]string{})
+	if _, code := splice(t, dir, "n.txt\n<<<<<<< SEARCH\n=======\nx\n>>>>>>> REPLACE\n"); code != 0 {
+		t.Fatal("exit", code)
+	}
+	fi, err := os.Stat(filepath.Join(dir, "n.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := newMode(); fi.Mode().Perm() != want {
+		t.Errorf("mode %v, want %v", fi.Mode().Perm(), want)
+	}
+}
+
+func TestFillEmptyFile(t *testing.T) {
+	dir := tree(t, map[string]string{"e.txt": ""})
+	if out, code := splice(t, dir, "e.txt\n<<<<<<< SEARCH\n=======\nhello\n>>>>>>> REPLACE\n"); code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if got := read(t, dir, "e.txt"); got != "hello\n" {
+		t.Errorf("e.txt = %q", got)
+	}
+}
+
+func TestHugeFileNames(t *testing.T) {
+	dir := tree(t, map[string]string{"big.go": "package big\n\nfunc f() {}\n" + strings.Repeat("// pad\n", 700000)})
+	out, code := splice(t, dir, "big.go:f\n<<<<<<< SEARCH\n{}\n=======\n{ return }\n>>>>>>> REPLACE\n")
+	if code != 1 || !strings.Contains(out, "larger than 4 MB") {
+		t.Errorf("exit %d:\n%s", code, out)
+	}
+}
+
+// TestScatteredChanges checks the report when one file has more changes
+// than one diff takes: each changed function is listed once with its own
+// counts, not every function between the first change and the last
+// (Sonnet 5.5's re-check).
+func TestScatteredChanges(t *testing.T) {
+	var src strings.Builder
+	src.WriteString("package a\n")
+	for i := 0; i < 3000; i++ {
+		v := "x"
+		if i%2 == 1 {
+			v = "y"
+		}
+		fmt.Fprintf(&src, "\nfunc F%d() {\n\t%s := %d\n\t_ = %s\n}\n", i, v, i, v)
+	}
+	dir := tree(t, map[string]string{"a.go": src.String()})
+	out, code := splice(t, dir, "a.go\n<<<<<<< SEARCH all\n\tx := \n=======\n\tx := -\n>>>>>>> REPLACE\n")
+	if code != 0 {
+		t.Fatalf("exit %d:\n%.2000s", code, out)
+	}
+	if n := strings.Count(out, "changed func"); n != 1500 {
+		t.Errorf("%d changed functions, want 1500", n)
+	}
+	if strings.Contains(out, "changed func F1 ") {
+		t.Errorf("F1 wasn't changed but is listed")
+	}
+}
+
+// TestAnchored checks that the anchored diff turns a into b.
+func TestAnchored(t *testing.T) {
+	rng := rand.New(rand.NewSource(3))
+	for iter := 0; iter < 500; iter++ {
+		gen := func() []string {
+			out := make([]string, rng.Intn(60))
+			for i := range out {
+				out[i] = fmt.Sprint(rng.Intn(40))
+			}
+			return out
+		}
+		a, b := gen(), gen()
+		var got []string
+		pos := 0
+		for _, h := range anchored(a, b, 0) {
+			got = append(got, a[pos:h.os]...)
+			got = append(got, b[h.ns:h.ns+h.nc]...)
+			pos = h.os + h.oc
+		}
+		got = append(got, a[pos:]...)
+		if strings.Join(got, ",") != strings.Join(b, ",") {
+			t.Fatalf("a=%v b=%v gives %v", a, b, got)
+		}
+	}
+}
+
+func TestDiffOfLastLineDeletion(t *testing.T) {
+	dir := tree(t, map[string]string{"n.txt": "a\nb"})
+	out, _ := splice(t, dir, "n.txt\n<<<<<<< SEARCH\nb\n=======\n>>>>>>> REPLACE\n", "--diff")
+	wants(t, out, "block 1 at L2:\n    - b\n")
 }
 
 // TestInnermostAll checks the one-pass lookup against ref.Innermost.

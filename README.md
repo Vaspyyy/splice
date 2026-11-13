@@ -75,7 +75,7 @@ A path can be relative to the repository root or the working directory, absolute
 - **Replace every occurrence** with `<<<<<<< SEARCH all`: every exact occurrence in the scope, at least one.
 - **Delete lines**: no lines at all between `=======` and `>>>>>>> REPLACE`. Old text that is whole lines goes with its line breaks; one empty line there leaves an empty line instead.
 - **Replace a whole definition**: empty old text and a header that names a definition (by name, or by a line inside it). The defining line through its last line is replaced; the doc comment above it and the blank lines it ends in stay. The new text is moved to the definition's indentation if its first line has another.
-- **Create a file**: empty old text and a path that doesn't exist. Missing folders are created.
+- **Create a file**: empty old text and a path that doesn't exist (or an existing empty file). Missing folders are created, with the file's mode from your umask.
 
 A block whose old text contains marker lines (a test or a doc about this format) uses longer markers: `<<<<<<<<< SEARCH`, `=========` and `>>>>>>>>> REPLACE`, all of the same length. Inside it, shorter markers are text.
 
@@ -95,7 +95,7 @@ the other 2 blocks would apply
 
 When the old text isn't there, splice shows the nearest lines and the first one that differs, with tabs as `→` and spaces at the end of a line as `·`. If the new text is already there, it asks whether the block was applied already.
 
-Every changed file is first written to a temporary file next to it, and only when all of them are written are they renamed into place. So a file that changed on disk while splice ran, or a folder splice can't write to, stops the whole batch with nothing written. Modes are kept (setuid and setgid bits too), a symlink stays a symlink, and a file reached two ways (through a symlinked folder, or a hard link) is edited as one file. A file with more than one hard link is written in place instead of renamed, so all its names keep showing the same content. In a file with mixed line endings, lines that end in `\r\n` keep it.
+Every changed file is first written to a temporary file next to it, and only when all of them are written are they renamed into place. So a file that changed on disk while splice ran, or a folder splice can't write to, stops the whole batch with nothing written. Modes are kept (setuid and setgid bits too), a symlink stays a symlink, and a file reached two ways (through a symlinked folder, or a hard link) is edited as one file. A file with more than one hard link is written in place instead of renamed, so all its names keep showing the same content. In a file with mixed line endings, lines that end in `\r\n` keep it, and new lines put into such a line get `\r\n` too.
 
 ### The report
 

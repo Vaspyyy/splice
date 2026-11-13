@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -35,7 +36,7 @@ type file struct {
 type edit struct {
 	b        *block
 	old, new string // the text replaced and the text put there (\n line endings)
-	line     int    // 1-based line in the buffer where the change starts, at the time
+	off      int    // where the change starts in the buffer, kept right as later blocks edit
 	count    int    // occurrences replaced (SEARCH all)
 }
 
@@ -97,6 +98,19 @@ func (s *session) apply(b *block) {
 		s.fail(b, msg, detail...)
 		return
 	}
+	if creating && f.exists && !f.created && len(f.orig) == 0 && f.buf == "" && len(f.edits) == 0 {
+		// an existing empty file: given its content as if it were created
+		if b.All {
+			s.fail(b, `"SEARCH all" needs old text`)
+			return
+		}
+		f.buf = b.New
+		if b.HasNew {
+			f.buf += "\n"
+		}
+		f.edits = append(f.edits, &edit{b: b, new: b.New})
+		return
+	}
 	if creating {
 		if f.exists || f.created {
 			s.fail(b, fmt.Sprintf("the old text is empty, which creates a file, but %s exists: put the text to replace in the block, or name a definition to replace it whole (%s:Name)", f.rel, f.rel))
@@ -110,7 +124,7 @@ func (s *session) apply(b *block) {
 		if b.HasNew {
 			f.buf += "\n"
 		}
-		f.edits = append(f.edits, &edit{b: b, new: b.New, line: 1})
+		f.edits = append(f.edits, &edit{b: b, new: b.New})
 		return
 	}
 	if !f.exists && !f.created {
@@ -121,7 +135,10 @@ func (s *session) apply(b *block) {
 	// the scope: the whole file, a definition or some lines
 	lo, hi := 0, len(f.buf)
 	scopeName := ""
-	targets := ref.Targets(f.rel, outline.Parse(f.rel, []byte(f.buf), outline.MaxSize))
+	var targets []ref.Target // the file's definitions, read only when a block needs them
+	if r.HasTarget {
+		targets = f.targets()
+	}
 	whole := newLineIndex(f.buf)
 	lineSpan := func(first, last int) (int, int) { // 1-based lines, inclusive
 		first = max(first, 1)
@@ -145,7 +162,7 @@ func (s *session) apply(b *block) {
 		}
 		lo, hi = lineSpan(r.Line, r.End)
 		scopeName = fmt.Sprintf("%s:%d-%d", f.rel, r.Line, r.End)
-	case r.Name == "" && r.Line < 1 || lineLike(r.Name):
+	case r.Name == "" && r.Line < 1:
 		s.fail(b, fmt.Sprintf("%q isn't a line or a range in %s: lines start at 1 (path:104, path:80-120)", b.Header, f.rel))
 		return
 	default:
@@ -157,6 +174,12 @@ func (s *session) apply(b *block) {
 				return
 			}
 			f.note(fmt.Sprintf("block %d: line %d is outside any definition, so the whole file was searched", b.N, r.Line))
+		case len(idx) == 0 && lineLike(r.Name):
+			s.fail(b, fmt.Sprintf("%q isn't a line or a range in %s: lines start at 1 (path:104, path:80-120)", b.Header, f.rel))
+			return
+		case len(idx) == 0 && len(f.buf) > outline.MaxSize:
+			s.fail(b, fmt.Sprintf("%s is larger than %d MB, and splice finds definitions only in smaller files; use a line range header (%s:80-120) or the path alone", f.rel, outline.MaxSize>>20, f.rel))
+			return
 		case len(idx) == 0:
 			s.fail(b, fmt.Sprintf("%s has no definition %s", f.rel, r.Name), s.likelyNames(r, targets, f.rel)...)
 			return
@@ -231,22 +254,34 @@ func (s *session) apply(b *block) {
 	if b.All {
 		offs := aligned(scope, b.Old, exactAll(scope, b.Old))
 		if len(offs) == 0 {
-			s.notFound(f, b, scope, lo, scopeName, targets)
+			s.notFound(f, b, scope, lo, scopeName, f.targets())
 			return
 		}
 		if overlap(offs, len(b.Old)) {
 			s.fail(b, fmt.Sprintf("the old text occurs %d times%s, and some of them overlap, so which to replace is unclear; make it longer", len(offs), inScope(scopeName)))
 			return
 		}
-		for i := len(offs) - 1; i >= 0; i-- { // from the end, so the offsets before stay right
-			start, end := lo+offs[i], lo+offs[i]+len(b.Old)
+		// one pass over the buffer, so many occurrences don't take
+		// quadratic time
+		var sb strings.Builder
+		var cuts []cut
+		prev := 0
+		for _, o := range offs {
+			start, end := lo+o, lo+o+len(b.Old)
 			if !b.HasNew {
 				start, end = withLineBreak(f.buf, start, end)
 			}
-			f.shift(strings.Count(f.buf[:start], "\n")+1, f.buf[start:end], b.New)
-			f.buf = f.buf[:start] + b.New + f.buf[end:]
+			start = max(start, prev)
+			text := crText(f.buf, end, b.New)
+			sb.WriteString(f.buf[prev:start])
+			sb.WriteString(text)
+			cuts = append(cuts, cut{start, end, len(text)})
+			prev = end
 		}
-		f.edits = append(f.edits, &edit{b: b, old: b.Old, new: b.New, line: whole.lineAt(lo+offs[0]) + 1, count: len(offs)})
+		sb.WriteString(f.buf[prev:])
+		f.shift(cuts)
+		f.buf = sb.String()
+		f.edits = append(f.edits, &edit{b: b, old: b.Old, new: b.New, off: cuts[0].start, count: len(offs)})
 		if b.Old == b.New {
 			f.note(fmt.Sprintf("block %d: the new text is the same as the old", b.N))
 		}
@@ -267,7 +302,7 @@ func (s *session) apply(b *block) {
 	}
 	switch len(spans) {
 	case 0:
-		s.notFound(f, b, scope, lo, scopeName, targets)
+		s.notFound(f, b, scope, lo, scopeName, f.targets())
 	case 1:
 		sp := spans[0]
 		sp.start += lo
@@ -277,6 +312,7 @@ func (s *session) apply(b *block) {
 		}
 		s.replace(f, b, sp, 1)
 	default:
+		targets = f.targets()
 		var where []string
 		perLine := map[int]int{}
 		for _, sp := range spans {
@@ -296,7 +332,13 @@ func (s *session) apply(b *block) {
 			where = append(where, at)
 		}
 		how := `make it unique with more lines, or use "SEARCH all" to replace every one`
-		if def == nil && r.End == 0 {
+		overlapping := false
+		for k := 1; k < len(spans); k++ {
+			overlapping = overlapping || spans[k].start < spans[k-1].end
+		}
+		if overlapping {
+			how = `the occurrences overlap, so "SEARCH all" can't take them either; make it unique with more text`
+		} else if def == nil && r.End == 0 {
 			if in := s.containing(f, targets, spans, lo, whole); in != "" {
 				how = fmt.Sprintf(`make it unique with more lines or a header like %s, or use "SEARCH all" to replace every one`, in)
 			}
@@ -322,14 +364,28 @@ func (s *session) replace(f *file, b *block, sp span, count int) {
 	if !b.HasNew {
 		sp.start, sp.end = withLineBreak(f.buf, sp.start, sp.end)
 	}
-	line := strings.Count(f.buf[:sp.start], "\n") + 1
+	sp.text = crText(f.buf, sp.end, sp.text)
 	old := f.buf[sp.start:sp.end]
-	f.shift(line, old, sp.text)
+	f.shift([]cut{{sp.start, sp.end, len(sp.text)}})
 	f.buf = f.buf[:sp.start] + sp.text + f.buf[sp.end:]
-	f.edits = append(f.edits, &edit{b: b, old: old, new: sp.text, line: line, count: count})
+	f.edits = append(f.edits, &edit{b: b, old: old, new: sp.text, off: sp.start, count: count})
 	if old == sp.text {
 		f.note(fmt.Sprintf("block %d: the new text is the same as the old", b.N))
 	}
+}
+
+// crText gives new text the \r\n line breaks of the line it goes into, in a
+// file with mixed line endings (a file with \r\n everywhere is worked on
+// with \n and needs nothing).
+func crText(buf string, end int, text string) string {
+	if !strings.Contains(text, "\n") || strings.Contains(text, "\r") {
+		return text
+	}
+	j := strings.IndexByte(buf[end:], '\n')
+	if j < 0 || end+j == 0 || buf[end+j-1] != '\r' {
+		return text
+	}
+	return strings.ReplaceAll(text, "\n", "\r\n")
 }
 
 // withLineBreak extends a match of whole lines over the line break after
@@ -355,31 +411,42 @@ func withLineBreak(buf string, start, end int) (int, int) {
 	return start, end
 }
 
-// lineLike is a header target that looks like a line or range but isn't
-// one prism reads as such ("0", "0-3").
+var lineRe = regexp.MustCompile(`^[0-9]+(-[0-9]+)?(:[0-9]+)?$`)
+
+// lineLike is a header target that looks like a line or a range but named
+// no definition ("0", "0-3"); a heading like "2026-11-13" isn't one.
 func lineLike(name string) bool {
-	if name == "" {
-		return false
-	}
-	return strings.Trim(name, "0123456789-:") == ""
+	return lineRe.MatchString(name)
 }
 
 func (f *file) note(n string) { f.notes = append(f.notes, n) }
 
-// shift moves the lines of earlier edits below line by what replacing old
-// with new there adds or removes, so --diff shows lines of the final file.
-func (f *file) shift(line int, old, new string) {
-	gone := strings.Count(old, "\n")
-	d := strings.Count(new, "\n") - gone
+// targets are the definitions in f's current content.
+func (f *file) targets() []ref.Target {
+	return ref.Targets(f.rel, outline.Parse(f.rel, []byte(f.buf), outline.MaxSize))
+}
+
+// shift moves earlier edits' offsets past what the cuts (in order) add or
+// remove before them, so --diff shows lines of the final file.
+func (f *file) shift(cuts []cut) {
 	for _, e := range f.edits {
-		switch {
-		case e.line > line+gone:
-			e.line += d
-		case e.line > line: // inside the text replaced now: it starts there
-			e.line = line
+		x, moved := e.off, 0
+		for _, c := range cuts {
+			if x >= c.end {
+				moved += c.text - (c.end - c.start)
+				continue
+			}
+			if x >= c.start { // inside the text replaced now: it starts there
+				x = c.start
+			}
+			break
 		}
+		e.off = x + moved
 	}
 }
+
+// cut is one replacement in a buffer: bytes [start, end) became text bytes.
+type cut struct{ start, end, text int }
 
 // notFound reports a block whose old text isn't in its scope, with the
 // nearest place, or the new text when it's there already.
@@ -547,11 +614,9 @@ func (s *session) open(p string, creating bool) (*file, string, []string) {
 	fi, err := os.Lstat(abs)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		// a new file: through the real folder, so two spellings of one
-		// path are one file
-		if d, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
-			f.abs = filepath.Join(d, filepath.Base(abs))
-		}
+		// a new file: through the real folder (the deepest one that
+		// exists), so two spellings of one path are one file
+		f.abs = realNew(abs)
 	case err != nil:
 		return nil, err.Error(), nil
 	default:
@@ -601,6 +666,22 @@ func (s *session) open(p string, creating bool) (*file, string, []string) {
 	s.files[f.abs] = f
 	s.order = append(s.order, f)
 	return f, "", nil
+}
+
+// realNew resolves the symlinks in the part of a new file's path that
+// exists already.
+func realNew(abs string) string {
+	dir, rest := filepath.Dir(abs), filepath.Base(abs)
+	for {
+		if d, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(d, rest)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return abs
+		}
+		dir, rest = parent, filepath.Join(filepath.Base(dir), rest)
+	}
 }
 
 // where turns a header's path into the file's absolute and printed paths.
@@ -655,9 +736,15 @@ func (s *session) write() (written []*file, err error) {
 		tmp string
 	}
 	var st []staged
+	var made []string // folders made for new files, deepest first per file
 	drop := func(from int) {
 		for _, x := range st[from:] {
 			os.Remove(x.tmp)
+		}
+		if from == 0 { // nothing was written: the folders go too, if empty
+			for _, d := range made {
+				os.Remove(d)
+			}
 		}
 	}
 	// first every file to a temporary file next to it, so that a file that
@@ -677,7 +764,8 @@ func (s *session) write() (written []*file, err error) {
 			drop(0)
 			return nil, fmt.Errorf("%s was created by something else while splice ran", f.rel)
 		}
-		tmp, err := stage(f)
+		tmp, dirs, err := stage(f)
+		made = append(made, dirs...)
 		if err != nil {
 			drop(0)
 			return nil, fmt.Errorf("%s: %v", f.rel, err)
@@ -722,40 +810,46 @@ func (f *file) out() string {
 }
 
 // stage writes f's new content to a temporary file next to it, with its
-// mode, and returns its path.
-func stage(f *file) (string, error) {
+// mode, and returns its path and the folders it had to make for it.
+func stage(f *file) (tmp string, made []string, err error) {
 	dir := filepath.Dir(f.abs)
 	if f.created {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return "", err
+		for d := dir; ; d = filepath.Dir(d) {
+			if _, err := os.Lstat(d); err == nil || filepath.Dir(d) == d {
+				break
+			}
+			made = append(made, d)
+		}
+		if err := os.MkdirAll(dir, 0o777); err != nil {
+			return "", made, err
 		}
 	}
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(f.abs)+".splice-*")
+	t, err := os.CreateTemp(dir, "."+filepath.Base(f.abs)+".splice-*")
 	if err != nil {
-		return "", err
+		return "", made, err
 	}
-	name := tmp.Name()
-	fail := func(err error) (string, error) {
-		tmp.Close()
+	name := t.Name()
+	fail := func(err error) (string, []string, error) {
+		t.Close()
 		os.Remove(name)
-		return "", err
+		return "", made, err
 	}
-	if _, err := tmp.WriteString(f.out()); err != nil {
+	if _, err := t.WriteString(f.out()); err != nil {
 		return fail(err)
 	}
-	if err := tmp.Sync(); err != nil {
+	if err := t.Sync(); err != nil {
 		return fail(err)
 	}
 	mode := f.mode
 	if f.created {
-		mode = 0o644
+		mode = newMode()
 	}
-	if err := tmp.Chmod(mode); err != nil {
+	if err := t.Chmod(mode); err != nil {
 		return fail(err)
 	}
-	if err := tmp.Close(); err != nil {
+	if err := t.Close(); err != nil {
 		os.Remove(name)
-		return "", err
+		return "", made, err
 	}
-	return name, nil
+	return name, made, nil
 }
