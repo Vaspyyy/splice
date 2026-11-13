@@ -92,6 +92,24 @@ TWO
 	}
 }
 
+// TestHardLinkInPlace checks that a file with another hard link is written
+// in place, so both names show the edit (GPT-6.1 Terra's re-check).
+func TestHardLinkInPlace(t *testing.T) {
+	dir := tree(t, map[string]string{"a": "one\ntwo\n"})
+	if err := os.Link(filepath.Join(dir, "a"), filepath.Join(dir, "b")); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := splice(t, dir, "b\n<<<<<<< SEARCH\none\n=======\nONE\n>>>>>>> REPLACE\n"); code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if got := read(t, dir, "a"); got != "ONE\ntwo\n" {
+		t.Errorf("a = %q", got)
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, ".b.splice-*")); len(left) > 0 {
+		t.Errorf("temporary files left: %v", left)
+	}
+}
+
 func TestNothingWrittenWhenAFolderIsReadOnly(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root can write to a read-only folder")
@@ -138,6 +156,12 @@ func TestDiffLinesAreFinal(t *testing.T) {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
 	wants(t, out, "block 1 at L6:", "block 2 at L1:")
+
+	// a later block that takes in an earlier one's lines: the earlier one
+	// starts where the later one does, never at line 0
+	dir = tree(t, map[string]string{"a.txt": "one\ntwo\nthree\nfour\n"})
+	out, _ = splice(t, dir, "a.txt\n<<<<<<< SEARCH\ntwo\n=======\nTWO\n>>>>>>> REPLACE\n<<<<<<< SEARCH\none\nTWO\nthree\n=======\nX\n>>>>>>> REPLACE\n", "--diff")
+	wants(t, out, "block 1 at L1:", "block 2 at L1:")
 }
 
 func TestSpecialModeBits(t *testing.T) {
@@ -180,6 +204,16 @@ func TestMixedLineEndings(t *testing.T) {
 	wants(t, out, `ignoring the \r`)
 	if got := read(t, dir, "m.txt"); got != "X\r\nY\r\nc\n" {
 		t.Errorf("m.txt = %q", got)
+	}
+	dir = tree(t, map[string]string{"m.txt": "a\r\nb\nc\n", "n.txt": "a\nb\r\nc"})
+	if out, code := splice(t, dir, "m.txt\n<<<<<<< SEARCH\na\n=======\n>>>>>>> REPLACE\nn.txt\n<<<<<<< SEARCH\nc\n=======\n>>>>>>> REPLACE\n"); code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if got := read(t, dir, "m.txt"); got != "b\nc\n" {
+		t.Errorf("m.txt = %q", got)
+	}
+	if got := read(t, dir, "n.txt"); got != "a\nb" {
+		t.Errorf("n.txt = %q", got)
 	}
 }
 

@@ -342,9 +342,14 @@ func withLineBreak(buf string, start, end int) (int, int) {
 	switch {
 	case end < len(buf) && buf[end] == '\n':
 		return start, end + 1
+	case end+1 < len(buf) && buf[end] == '\r' && buf[end+1] == '\n': // a \r\n line in a file with mixed endings
+		return start, end + 2
 	case end == len(buf) && end > start && buf[end-1] != '\n' && start > 0:
 		// the last line of a file without a final newline: the line break
 		// before it goes, so the file still doesn't end in one
+		if start > 1 && buf[start-2] == '\r' {
+			return start - 2, end
+		}
 		return start - 1, end
 	}
 	return start, end
@@ -364,10 +369,14 @@ func (f *file) note(n string) { f.notes = append(f.notes, n) }
 // shift moves the lines of earlier edits below line by what replacing old
 // with new there adds or removes, so --diff shows lines of the final file.
 func (f *file) shift(line int, old, new string) {
-	d := strings.Count(new, "\n") - strings.Count(old, "\n")
+	gone := strings.Count(old, "\n")
+	d := strings.Count(new, "\n") - gone
 	for _, e := range f.edits {
-		if e.line > line {
+		switch {
+		case e.line > line+gone:
 			e.line += d
+		case e.line > line: // inside the text replaced now: it starts there
+			e.line = line
 		}
 	}
 }
@@ -675,9 +684,22 @@ func (s *session) write() (written []*file, err error) {
 		}
 		st = append(st, staged{f, tmp})
 	}
-	// then the renames, which only fail in odd cases (a folder that changed)
+	// then the renames, which only fail in odd cases (a folder that changed).
+	// A file with other hard links is written in place instead, so that all
+	// its names keep showing the same content.
 	for i, x := range st {
-		if err := os.Rename(x.tmp, x.f.abs); err != nil {
+		var err error
+		if x.f.info != nil && links(x.f.info) > 1 {
+			if err = os.WriteFile(x.f.abs, []byte(x.f.out()), x.f.mode.Perm()); err == nil {
+				os.Remove(x.tmp)
+			} else {
+				drop(i + 1)
+				return written, fmt.Errorf("%s: %v (its new content is in %s)", x.f.rel, err, x.tmp)
+			}
+		} else {
+			err = os.Rename(x.tmp, x.f.abs)
+		}
+		if err != nil {
 			drop(i)
 			return written, fmt.Errorf("%s: %v", x.f.rel, err)
 		}

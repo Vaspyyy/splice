@@ -95,7 +95,7 @@ the other 2 blocks would apply
 
 When the old text isn't there, splice shows the nearest lines and the first one that differs, with tabs as `→` and spaces at the end of a line as `·`. If the new text is already there, it asks whether the block was applied already.
 
-Every changed file is first written to a temporary file next to it, and only when all of them are written are they renamed into place. So a file that changed on disk while splice ran, or a folder splice can't write to, stops the whole batch with nothing written. Modes are kept (setuid and setgid bits too), a symlink stays a symlink, and a file reached two ways (through a symlinked folder, or a hard link) is edited as one file. In a file with mixed line endings, lines that end in `\r\n` keep it.
+Every changed file is first written to a temporary file next to it, and only when all of them are written are they renamed into place. So a file that changed on disk while splice ran, or a folder splice can't write to, stops the whole batch with nothing written. Modes are kept (setuid and setgid bits too), a symlink stays a symlink, and a file reached two ways (through a symlinked folder, or a hard link) is edited as one file. A file with more than one hard link is written in place instead of renamed, so all its names keep showing the same content. In a file with mixed line endings, lines that end in `\r\n` keep it.
 
 ### The report
 

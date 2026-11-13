@@ -177,7 +177,9 @@ the doc comment's range, which only seek knows today; see "Later".)
   with nothing written. Only a failed rename (a folder that changed under
   splice) can leave some files written; splice then says which.
 - One file reached two ways (a symlinked folder, a hard link) is one buffer:
-  splice resolves every path to the real file before it reads it.
+  splice resolves every path to the real file before it reads it. A file
+  with more than one hard link is written in place after staging, not
+  renamed, since a rename would leave its other names on the old content.
 - A block whose new text equals its old text is fine, but noted.
 
 ## Output
