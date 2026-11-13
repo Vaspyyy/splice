@@ -543,6 +543,24 @@ func TestNestedNewFoldersGo(t *testing.T) {
 	}
 }
 
+// TestCRTextEndingWithABreak is from Sonnet 5.5's final re-check: new text
+// that ends with a line break takes the replaced line's ending, not the
+// next line's.
+func TestCRTextEndingWithABreak(t *testing.T) {
+	dir := tree(t, map[string]string{"m.txt": "a\nb\nc\r\nd\r\n", "n.txt": "a\nb\nx"})
+	out, code := splice(t, dir, "m.txt\n<<<<<<< SEARCH\nb\n\n=======\nB1\nB2\n\n>>>>>>> REPLACE\nn.txt\n<<<<<<< SEARCH all\nx\n=======\n>>>>>>> REPLACE\n", "--diff")
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if got := read(t, dir, "m.txt"); got != "a\nB1\nB2\nc\r\nd\r\n" {
+		t.Errorf("m.txt = %q", got)
+	}
+	wants(t, out, "block 2 at L3:\n    - x\n")
+	if got := read(t, dir, "n.txt"); got != "a\nb" {
+		t.Errorf("n.txt = %q", got)
+	}
+}
+
 // TestInnermostAll checks the one-pass lookup against ref.Innermost.
 func TestInnermostAll(t *testing.T) {
 	rng := rand.New(rand.NewSource(2))

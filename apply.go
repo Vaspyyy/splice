@@ -406,9 +406,16 @@ func crText(buf string, start, end int, text string) string {
 			breaks = append(breaks, i > 0 && buf[i-1] == '\r')
 		}
 	}
-	tail := false // the line the replaced text ends in has \r\n
-	if j := strings.IndexByte(buf[end:], '\n'); j >= 0 && end+j > 0 && buf[end+j-1] == '\r' {
-		tail = true
+	tail := false // the ending for line breaks beyond the replaced text's
+	switch {
+	case end > start && buf[end-1] == '\n':
+		// the replaced text ends with its line break: its last one
+		tail = len(breaks) > 0 && breaks[len(breaks)-1]
+	default:
+		// it ends inside a line: that line's
+		if j := strings.IndexByte(buf[end:], '\n'); j >= 0 && end+j > 0 && buf[end+j-1] == '\r' {
+			tail = true
+		}
 	}
 	if !tail && !slices.Contains(breaks, true) {
 		return text

@@ -15,7 +15,7 @@ import (
 	"golang.org/x/term"
 )
 
-const version = "0.1.1"
+const version = "0.1.2"
 
 type options struct {
 	dry, diff, plain bool
