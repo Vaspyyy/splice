@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -272,7 +273,7 @@ func (s *session) apply(b *block) {
 				start, end = withLineBreak(f.buf, start, end)
 			}
 			start = max(start, prev)
-			text := crText(f.buf, end, b.New)
+			text := crText(f.buf, start, end, b.New)
 			sb.WriteString(f.buf[prev:start])
 			sb.WriteString(text)
 			cuts = append(cuts, cut{start, end, len(text)})
@@ -364,7 +365,7 @@ func (s *session) replace(f *file, b *block, sp span, count int) {
 	if !b.HasNew {
 		sp.start, sp.end = withLineBreak(f.buf, sp.start, sp.end)
 	}
-	sp.text = crText(f.buf, sp.end, sp.text)
+	sp.text = crText(f.buf, sp.start, sp.end, sp.text)
 	old := f.buf[sp.start:sp.end]
 	f.shift([]cut{{sp.start, sp.end, len(sp.text)}})
 	f.buf = f.buf[:sp.start] + sp.text + f.buf[sp.end:]
@@ -374,18 +375,43 @@ func (s *session) replace(f *file, b *block, sp span, count int) {
 	}
 }
 
-// crText gives new text the \r\n line breaks of the line it goes into, in a
-// file with mixed line endings (a file with \r\n everywhere is worked on
-// with \n and needs nothing).
-func crText(buf string, end int, text string) string {
+// crText gives the line breaks of new text the endings of the replaced
+// text's line breaks, one by one, and the ending of the line it ends in for
+// the ones beyond, in a file with mixed line endings (a file with \r\n
+// everywhere is worked on with \n and needs nothing).
+func crText(buf string, start, end int, text string) string {
 	if !strings.Contains(text, "\n") || strings.Contains(text, "\r") {
 		return text
 	}
-	j := strings.IndexByte(buf[end:], '\n')
-	if j < 0 || end+j == 0 || buf[end+j-1] != '\r' {
+	var breaks []bool // the replaced text's line breaks: \r\n or not
+	for i := start; i < end; i++ {
+		if buf[i] == '\n' {
+			breaks = append(breaks, i > 0 && buf[i-1] == '\r')
+		}
+	}
+	tail := false // the line the replaced text ends in has \r\n
+	if j := strings.IndexByte(buf[end:], '\n'); j >= 0 && end+j > 0 && buf[end+j-1] == '\r' {
+		tail = true
+	}
+	if !tail && !slices.Contains(breaks, true) {
 		return text
 	}
-	return strings.ReplaceAll(text, "\n", "\r\n")
+	var sb strings.Builder
+	k := 0
+	for i := 0; i < len(text); i++ {
+		if text[i] == '\n' {
+			cr := tail
+			if k < len(breaks) {
+				cr = breaks[k]
+			}
+			if cr {
+				sb.WriteByte('\r')
+			}
+			k++
+		}
+		sb.WriteByte(text[i])
+	}
+	return sb.String()
 }
 
 // withLineBreak extends a match of whole lines over the line break after
@@ -732,14 +758,18 @@ func (s *session) where(p string, creating bool) (abs, rel, msg string, detail [
 // was read, or a temporary file can't be written, nothing is replaced.
 func (s *session) write() (written []*file, err error) {
 	type staged struct {
-		f   *file
-		tmp string
+		f     *file
+		tmp   string
+		place *os.File // open for writing: a file with other hard links, written in place
 	}
 	var st []staged
 	var made []string // folders made for new files, deepest first per file
 	drop := func(from int) {
 		for _, x := range st[from:] {
 			os.Remove(x.tmp)
+			if x.place != nil {
+				x.place.Close()
+			}
 		}
 		if from == 0 { // nothing was written: the folders go too, if empty
 			for _, d := range made {
@@ -748,17 +778,28 @@ func (s *session) write() (written []*file, err error) {
 		}
 	}
 	// first every file to a temporary file next to it, so that a file that
-	// changed on disk or a folder that can't be written stops everything
-	// before anything is replaced
+	// changed on disk, a read-only file or a folder that can't be written
+	// stops everything before anything is replaced
 	for _, f := range s.order {
 		if !f.changed() {
 			continue
 		}
+		var place *os.File
 		if f.exists {
 			now, rerr := os.ReadFile(f.abs)
 			if rerr != nil || !bytes.Equal(now, f.orig) {
 				drop(0)
 				return nil, fmt.Errorf("%s changed on disk while splice ran", f.rel)
+			}
+			h, oerr := os.OpenFile(f.abs, os.O_WRONLY, 0)
+			if oerr != nil {
+				drop(0)
+				return nil, fmt.Errorf("%s can't be written: %v", f.rel, oerr)
+			}
+			if f.info != nil && links(f.info) > 1 {
+				place = h
+			} else {
+				h.Close()
 			}
 		} else if _, serr := os.Lstat(f.abs); serr == nil {
 			drop(0)
@@ -767,28 +808,61 @@ func (s *session) write() (written []*file, err error) {
 		tmp, dirs, err := stage(f)
 		made = append(made, dirs...)
 		if err != nil {
+			if place != nil {
+				place.Close()
+			}
 			drop(0)
 			return nil, fmt.Errorf("%s: %v", f.rel, err)
 		}
-		st = append(st, staged{f, tmp})
+		st = append(st, staged{f, tmp, place})
 	}
-	// then the renames, which only fail in odd cases (a folder that changed).
-	// A file with other hard links is written in place instead, so that all
-	// its names keep showing the same content.
-	for i, x := range st {
-		var err error
-		if x.f.info != nil && links(x.f.info) > 1 {
-			if err = os.WriteFile(x.f.abs, []byte(x.f.out()), x.f.mode.Perm()); err == nil {
-				os.Remove(x.tmp)
-			} else {
-				drop(i + 1)
-				return written, fmt.Errorf("%s: %v (its new content is in %s)", x.f.rel, err, x.tmp)
-			}
-		} else {
-			err = os.Rename(x.tmp, x.f.abs)
+	// then the files with other hard links, in place so that all their
+	// names keep showing the same content; they go first, so that if one
+	// fails nothing else has been replaced yet
+	for _, x := range st {
+		if x.place == nil {
+			continue
 		}
+		data := []byte(x.f.out())
+		err := x.place.Truncate(0)
+		if err == nil {
+			_, err = x.place.WriteAt(data, 0)
+		}
+		if err == nil {
+			err = x.place.Sync()
+		}
+		if err == nil {
+			err = x.place.Chmod(x.f.mode) // a write clears setuid and setgid
+		}
+		if cerr := x.place.Close(); err == nil {
+			err = cerr
+		}
+		x.place = nil
 		if err != nil {
-			drop(i)
+			for _, y := range st {
+				if y.tmp != x.tmp {
+					os.Remove(y.tmp)
+				}
+				if y.place != nil && y.place != x.place {
+					y.place.Close()
+				}
+			}
+			return written, fmt.Errorf("%s: %v (its new content is in %s)", x.f.rel, err, x.tmp)
+		}
+		os.Remove(x.tmp)
+		written = append(written, x.f)
+	}
+	// then the renames, which only fail in odd cases (a folder that changed)
+	for i, x := range st {
+		if x.f.info != nil && links(x.f.info) > 1 {
+			continue
+		}
+		if err := os.Rename(x.tmp, x.f.abs); err != nil {
+			for _, y := range st[i:] {
+				if !(y.f.info != nil && links(y.f.info) > 1) {
+					os.Remove(y.tmp)
+				}
+			}
 			return written, fmt.Errorf("%s: %v", x.f.rel, err)
 		}
 		written = append(written, x.f)

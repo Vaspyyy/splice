@@ -431,6 +431,65 @@ func TestDiffOfLastLineDeletion(t *testing.T) {
 	wants(t, out, "block 1 at L2:\n    - b\n")
 }
 
+// The cases below are from GPT-6.1 Terra's final re-check of 0a73108.
+
+func TestReadOnlyStopsTheBatch(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write a read-only file")
+	}
+	for _, linked := range []bool{false, true} {
+		dir := tree(t, map[string]string{"a": "one\n", "b": "two\n"})
+		if linked {
+			if err := os.Link(filepath.Join(dir, "b"), filepath.Join(dir, "c")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.Chmod(filepath.Join(dir, "b"), 0o444); err != nil {
+			t.Fatal(err)
+		}
+		out, code := splice(t, dir, "a\n<<<<<<< SEARCH\none\n=======\nONE\n>>>>>>> REPLACE\nb\n<<<<<<< SEARCH\ntwo\n=======\nTWO\n>>>>>>> REPLACE\n")
+		if code != 1 || !strings.Contains(out, "nothing written: b can't be written") {
+			t.Errorf("linked=%v: exit %d:\n%s", linked, code, out)
+		}
+		if got := read(t, dir, "a"); got != "one\n" {
+			t.Errorf("linked=%v: a was written: %q", linked, got)
+		}
+	}
+}
+
+func TestCRLFKeptInsideATolerantMatch(t *testing.T) {
+	dir := tree(t, map[string]string{"f": "first\r\nsecond\nthird\n"})
+	if out, code := splice(t, dir, "f\n<<<<<<< SEARCH\nfirst\nsecond\n=======\nfirst\nSECOND\n>>>>>>> REPLACE\n"); code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if got := read(t, dir, "f"); got != "first\r\nSECOND\nthird\n" {
+		t.Errorf("f = %q", got)
+	}
+}
+
+func TestHardLinkKeepsSetgid(t *testing.T) {
+	dir := tree(t, map[string]string{"a": "one\n"})
+	p := filepath.Join(dir, "a")
+	if err := os.Link(p, filepath.Join(dir, "b")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(p, 0o755|os.ModeSetgid); err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Stat(p); fi.Mode()&os.ModeSetgid == 0 {
+		t.Skip("this file system doesn't keep the setgid bit")
+	}
+	if out, code := splice(t, dir, "a\n<<<<<<< SEARCH\none\n=======\nONE\n>>>>>>> REPLACE\n"); code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if fi, _ := os.Stat(p); fi.Mode()&os.ModeSetgid == 0 {
+		t.Errorf("mode = %v", fi.Mode())
+	}
+	if got := read(t, dir, "b"); got != "ONE\n" {
+		t.Errorf("b = %q", got)
+	}
+}
+
 // TestInnermostAll checks the one-pass lookup against ref.Innermost.
 func TestInnermostAll(t *testing.T) {
 	rng := rand.New(rand.NewSource(2))
