@@ -113,9 +113,9 @@ three
 >>>>>>> REPLACE
 main.go
 <<<<<<< SEARCH
-	fmt.Println(
+fmt.Println(
 =======
-	fmt.Print(
+fmt.Print(
 >>>>>>> REPLACE
 `)
 	if code != 1 {
@@ -300,7 +300,7 @@ def f(self, x):
 	if code != 1 {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
-	wants(t, out, "deleting a definition isn't supported yet")
+	wants(t, out, "deleting a definition this way isn't supported yet")
 }
 
 func TestCreate(t *testing.T) {

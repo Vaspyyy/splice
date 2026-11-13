@@ -60,9 +60,9 @@ A ref header is the easy way to make a common line unique: `return nil` occurs f
 
 ## Blocks
 
-- **Normal**: the old text must occur exactly once in the scope. It may be part of a line, one line or many.
+- **Normal**: the old text must occur exactly once in the scope. It may be part of a line, one line or many. Its leading indentation counts: `    return x` matches a line indented four spaces, not one indented eight. Leave the indentation out to match at any depth.
 - **`<<<<<<< SEARCH all`**: replace every exact occurrence in the scope.
-- **Empty SEARCH, ref header** (`main.go:run`): replace that whole definition, from its defining line to its end. Its doc comment stays; to change the doc comment too, use a normal block that includes it. If your new text starts at another indentation than the definition, splice moves it.
+- **Empty SEARCH, ref header** (`main.go:run`, or `main.go:104` for the definition containing that line): replace that whole definition, from its defining line to its end. Its doc comment stays; to change the doc comment too, use a normal block that includes it. If your new text starts at another indentation than the definition, splice moves it.
 - **Empty SEARCH, path that doesn't exist**: create the file (and its folders).
 - **No lines between `=======` and `>>>>>>> REPLACE`**: delete the old text; whole lines go with their line breaks. (One empty line there leaves an empty line.) To delete a definition, put it and its doc comment in the old text.
 

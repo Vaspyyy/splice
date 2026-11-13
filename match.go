@@ -64,7 +64,8 @@ func (x *lineIndex) lineAt(off int) int {
 	return lo
 }
 
-// exactAll returns the offsets of every non-overlapping occurrence of old in s.
+// exactAll returns the offset of every occurrence of old in s, overlapping
+// ones included, so that a count of one means old is unique.
 func exactAll(s, old string) []int {
 	var out []int
 	for i := 0; i <= len(s)-len(old); {
@@ -73,9 +74,35 @@ func exactAll(s, old string) []int {
 			break
 		}
 		out = append(out, i+j)
-		i += j + max(len(old), 1)
+		i += j + 1 // overlapping ones count too: "aa" occurs twice in "aaa"
 	}
 	return out
+}
+
+// aligned drops the matches of an old text that starts with spaces or tabs
+// where it starts inside a run of them: "    foo" doesn't match the end of
+// "        foo", which is a line with other indentation, not this one.
+func aligned(s, old string, offs []int) []int {
+	if old == "" || old[0] != ' ' && old[0] != '\t' {
+		return offs
+	}
+	out := offs[:0:0]
+	for _, o := range offs {
+		if o == 0 || s[o-1] != ' ' && s[o-1] != '\t' {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
+// overlap tells whether any two occurrences of a text of length n overlap.
+func overlap(offs []int, n int) bool {
+	for k := 1; k < len(offs); k++ {
+		if offs[k] < offs[k-1]+n {
+			return true
+		}
+	}
+	return false
 }
 
 func trimRight(s string) string { return strings.TrimRight(s, " \t\r") }
@@ -101,7 +128,12 @@ func tolerant(scope *lineIndex, old, new string) (spans []span, err error) {
 			ok = trimRight(scope.line(i+k)) == trimRight(ol[k])
 		}
 		if ok {
-			spans = append(spans, span{start: scope.starts[i], end: scope.lineEnd(i + n - 1), text: new, note: "matched ignoring spaces at the ends of lines"})
+			text, cr := keepCR(scope, i, n, new)
+			note := "matched ignoring spaces at the ends of lines"
+			if cr {
+				note = "matched ignoring the \\r of the file's \\r\\n line endings (kept in the new text)"
+			}
+			spans = append(spans, span{start: scope.starts[i], end: scope.lineEnd(i + n - 1), text: text, note: note})
 		}
 	}
 	if len(spans) > 0 {
@@ -117,23 +149,44 @@ func tolerant(scope *lineIndex, old, new string) (spans []span, err error) {
 	if first < 0 {
 		return nil, nil
 	}
-	var reindentErr error
-	for i := 0; i+n <= scope.count(); i++ {
-		prefix, add, ok := shifted(scope, i, ol, first)
-		if !ok {
-			continue
-		}
-		text, err := reindent(new, prefix, add)
-		if err != nil {
-			reindentErr = err
-			continue
-		}
-		spans = append(spans, span{start: scope.starts[i], end: scope.lineEnd(i + n - 1), text: text, note: "matched " + describeShift(prefix, add)})
+	// every place that matches counts, even one whose new text can't be
+	// shifted: otherwise an ambiguous block could apply to the other place
+	type cand struct {
+		i      int
+		prefix string
+		add    bool
 	}
-	if len(spans) == 0 && reindentErr != nil {
-		return nil, reindentErr
+	var cands []cand
+	for i := 0; i+n <= scope.count(); i++ {
+		if prefix, add, ok := shifted(scope, i, ol, first); ok {
+			cands = append(cands, cand{i, prefix, add})
+		}
+	}
+	for _, c := range cands {
+		text := new
+		if len(cands) == 1 {
+			if text, err = reindent(new, c.prefix, c.add); err != nil {
+				return nil, err
+			}
+			text, _ = keepCR(scope, c.i, n, text)
+		}
+		spans = append(spans, span{start: scope.starts[c.i], end: scope.lineEnd(c.i + n - 1), text: text, note: "matched " + describeShift(c.prefix, c.add)})
 	}
 	return spans, nil
+}
+
+// keepCR gives the new text the \r line endings of the n lines from line i
+// it replaces, when all of them have one (a file with mixed line endings).
+func keepCR(scope *lineIndex, i, n int, text string) (string, bool) {
+	for k := 0; k < n; k++ {
+		if !strings.HasSuffix(scope.line(i+k), "\r") {
+			return text, false
+		}
+	}
+	if text == "" {
+		return text, true
+	}
+	return strings.ReplaceAll(text, "\n", "\r\n") + "\r", true
 }
 
 // shifted tells whether the lines of scope from line i are ol with the

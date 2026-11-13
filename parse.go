@@ -113,6 +113,8 @@ func parseBlocks(src, text string, first int, header string) ([]*block, string, 
 				cur, state = nil, 0
 			case sameOpen(mark, len(divider)):
 				return nil, "", &inputError{fmt.Sprintf("%s: %s inside a block (block started at line %d; missing %s?)", at(n), mark, cur.Line, end)}
+			case mark == divider:
+				return nil, "", &inputError{fmt.Sprintf("%s: a second %s in the block that started at line %d; if the text has such lines, write the block with longer markers (%s SEARCH, %s, %s REPLACE)", at(n), divider, cur.Line, strings.Repeat("<", len(divider)+2), strings.Repeat("=", len(divider)+2), strings.Repeat(">", len(divider)+2))}
 			default:
 				nw = append(nw, line)
 			}

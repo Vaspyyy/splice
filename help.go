@@ -43,7 +43,10 @@ least once). If it isn't there as written, splice also tries it with
 spaces at the ends of lines ignored, then with its indentation shifted
 (the new text is shifted with it), and says so.`,
 	`Empty old text with a ref header (main.go:run) replaces that whole
-definition; with a path that doesn't exist, it creates the file.`,
+definition; with a path that doesn't exist, it creates the file. No new
+lines at all delete the old text, whole lines with their line breaks.`,
+	`Text that contains marker lines goes in a block with longer markers,
+all three the same length: <<<<<<<<< SEARCH, =========, >>>>>>>>> REPLACE.`,
 }
 
 var helpAfter = []struct {

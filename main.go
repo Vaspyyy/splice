@@ -131,6 +131,9 @@ func run(args []string, stdin io.Reader, stdinTTY bool, out *bufio.Writer, tty b
 		fmt.Fprintf(out, "splice: %s, nothing changed\n", plural(len(blocks), "block"))
 	case o.dry:
 		fmt.Fprintf(out, "splice: %s in %s, checked, nothing written\n", plural(len(blocks), "block"), files)
+	case werr != nil && len(written) == 0:
+		fmt.Fprintf(out, "%s\n", p.fail(fmt.Sprintf("splice: nothing written: %v", werr)))
+		return 1
 	case werr != nil:
 		fmt.Fprintf(out, "%s\n", p.fail(fmt.Sprintf("splice: %s in %s; wrote %d of %s, then: %v", plural(len(blocks), "block"), files, len(written), files, werr)))
 	default:

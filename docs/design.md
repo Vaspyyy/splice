@@ -76,6 +76,8 @@ EOF
   between blocks are ignored. Any other text outside blocks is an error: it
   usually means a header or marker went missing, and guessing would edit the
   wrong place.
+- A second `=======` in a block is an error, not text: it is what forgetting
+  the longer markers looks like. Text with such lines needs longer markers.
 - `<<<<<<< SEARCH all` replaces every occurrence instead of exactly one.
 - No lines at all for the new text deletes the old text; when the old text is
   whole lines, their line breaks go with them. One empty line as the new text
@@ -89,7 +91,7 @@ EOF
 | `path:Name` | text | replace its one occurrence inside that definition |
 | `path:104` | text | replace it inside the innermost definition containing line 104 |
 | `path:81-200` | text | replace it inside lines 81 to 200 |
-| `path:Name` | empty | replace the whole definition (its defining line to its last line) with the new text |
+| `path:Name` or `path:104` | empty | replace the whole definition (its defining line to its last line, without blank lines at its end) with the new text |
 | `path` (doesn't exist) | empty | create the file with the new text |
 
 Any header plus `SEARCH all`: replace every exact occurrence in that scope, at
@@ -113,7 +115,12 @@ the doc comment's range, which only seek knows today; see "Later".)
    converted to CRLF before matching and writing. A file's final newline (or
    its absence) is kept.
 2. **Exact.** The old text is searched as is, as a substring (it doesn't have
-   to be whole lines).
+   to be whole lines). Overlapping occurrences count, so a count of one
+   really means unique; `SEARCH all` refuses occurrences that overlap. Old
+   text that starts with spaces or tabs only matches where a run of them
+   starts: its indentation says which line it means, so `    foo` doesn't
+   match the end of `        foo`. Old text that is only blank lines is
+   refused.
 3. **If there is no exact match**, two tolerant matches are tried, line by
    line, in this order. Each must be unique in the scope:
    - **trailing whitespace** ignored at the end of every line;
@@ -121,8 +128,12 @@ the doc comment's range, which only seek knows today; see "Later".)
      file with the same prefix of leading whitespace added or removed. The new
      text is re-indented by the same amount, so a block written without its
      indentation lands correctly.
-   A tolerant match is reported on its line ("matched ignoring trailing
-   spaces", "matched 8 spaces further in"), never silent.
+   A tolerant match is reported on its line ("matched ignoring spaces at the
+   ends of lines", "matched 8 spaces further in"), never silent. Every place
+   that matches counts, even one whose new text couldn't be shifted, so an
+   ambiguous block is refused rather than applied to the other place. In a
+   file with mixed line endings, lines that end in `\r` give the new text
+   their `\r`.
 4. **Nothing matched:** the block fails and splice shows the **nearest** place:
    the lines of the scope most like the old text, with the first line that
    differs from both sides:
@@ -159,10 +170,14 @@ the doc comment's range, which only seek knows today; see "Later".)
 - **All or nothing.** splice reads, resolves and applies every block in
   memory first. If any block fails, it writes nothing, reports every failed
   block (not only the first) and exits 1.
-- Then each changed file is written to a temporary file in its directory and
-  renamed over the old one, keeping its mode. A file that changed on disk
-  since splice read it is not overwritten: splice stops and says which files
-  it wrote and which it didn't.
+- Then every changed file is written to a temporary file in its directory,
+  with its mode (setuid, setgid and sticky bits too). Only when all of them
+  are written are they renamed over the old files. A file that changed on
+  disk since splice read it, or a folder it can't write to, stops the batch
+  with nothing written. Only a failed rename (a folder that changed under
+  splice) can leave some files written; splice then says which.
+- One file reached two ways (a symlinked folder, a hard link) is one buffer:
+  splice resolves every path to the real file before it reads it.
 - A block whose new text equals its old text is fine, but noted.
 
 ## Output

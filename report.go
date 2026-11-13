@@ -258,10 +258,11 @@ func owners(lines []string, ts []ref.Target, rel string) []int {
 	within := func(c, p int) bool { // target c is nested in target p
 		return ts[c].Line > ts[p].Line && ts[c].End <= ts[p].End
 	}
+	inner := innermostAll(ts, len(lines))
 	out := make([]int, len(lines))
 	below := -1 // the definition a non-blank line here would belong to
 	for j := len(lines) - 1; j >= 0; j-- {
-		i := ref.Innermost(ts, rel, j+1)
+		i := inner[j]
 		o := i
 		if !blank(lines[j]) && below >= 0 && (i < 0 || within(below, i)) {
 			o = below
@@ -271,6 +272,37 @@ func owners(lines []string, ts []ref.Target, rel string) []int {
 			below = t
 		} else if blank(lines[j]) || o != below {
 			below = -1
+		}
+	}
+	return out
+}
+
+// innermostAll is ref.Innermost for every line (0-based) at once: the
+// smallest target containing it, the first of equal ones. It takes time in
+// proportion to the lines the targets span, not lines times targets.
+func innermostAll(ts []ref.Target, n int) []int {
+	span := func(i int) int { return max(ts[i].End, ts[i].Line) - ts[i].Line }
+	order := make([]int, len(ts))
+	for i := range order {
+		order[i] = i
+	}
+	// widest first, and among equal ones the last first, so that the
+	// innermost (and first) is written last
+	sort.Slice(order, func(a, b int) bool {
+		if sa, sb := span(order[a]), span(order[b]); sa != sb {
+			return sa > sb
+		}
+		return order[a] > order[b]
+	})
+	out := make([]int, n)
+	for j := range out {
+		out[j] = -1
+	}
+	for _, i := range order {
+		for l := ts[i].Line; l <= max(ts[i].End, ts[i].Line) && l <= n; l++ {
+			if l >= 1 {
+				out[l-1] = i
+			}
 		}
 	}
 	return out

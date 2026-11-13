@@ -67,14 +67,14 @@ Each block is a header line, then the old text between `<<<<<<< SEARCH` and `===
 | `main.go:104` | the innermost definition containing line 104 (outside definitions: the whole file) |
 | `main.go:80-120` | those lines |
 
-A path can be relative to the repository root or the working directory, absolute, or the unique end of a path git sees (`pty.rs`). A name can be the end of a qualified one (`run` for `Server.run`) and takes `#2` for the second of two definitions with the same name. A name that fits several definitions, or none, fails the block and lists the candidates.
+A path can be relative to the repository root or the working directory, absolute, or the unique end of a path git sees (`pty.rs`). When a relative path exists both under the root and under the working directory, the one under the root wins, as in the other tools; a new file goes under the root too when its folder exists there. A name can be the end of a qualified one (`run` for `Server.run`) and takes `#2` for the second of two definitions with the same name. A name that fits several definitions, or none, fails the block and lists the candidates.
 
 ### What a block does
 
-- **Replace once.** The old text must occur exactly once in its scope. If it isn't there as written, splice tries again ignoring spaces at the ends of lines, then with every line's indentation shifted by the same amount (the new text is shifted with it, so a block written without its indentation lands correctly). A tolerant match is noted in the report.
+- **Replace once.** The old text must occur exactly once in its scope. Overlapping occurrences count (`aa` occurs twice in `aaa`), and old text that starts with spaces or tabs matches only where that indentation starts, not inside a deeper one. If it isn't there as written, splice tries again ignoring spaces at the ends of lines, then with every line's indentation shifted by the same amount (the new text is shifted with it, so a block written without its indentation lands correctly). A tolerant match is noted in the report. Old text that is only blank lines is refused: it would match almost anywhere.
 - **Replace every occurrence** with `<<<<<<< SEARCH all`: every exact occurrence in the scope, at least one.
 - **Delete lines**: no lines at all between `=======` and `>>>>>>> REPLACE`. Old text that is whole lines goes with its line breaks; one empty line there leaves an empty line instead.
-- **Replace a whole definition**: empty old text and a header that names a definition. The defining line through its last line is replaced; the doc comment above it stays. The new text is moved to the definition's indentation if its first line has another.
+- **Replace a whole definition**: empty old text and a header that names a definition (by name, or by a line inside it). The defining line through its last line is replaced; the doc comment above it and the blank lines it ends in stay. The new text is moved to the definition's indentation if its first line has another.
 - **Create a file**: empty old text and a path that doesn't exist. Missing folders are created.
 
 A block whose old text contains marker lines (a test or a doc about this format) uses longer markers: `<<<<<<<<< SEARCH`, `=========` and `>>>>>>>>> REPLACE`, all of the same length. Inside it, shorter markers are text.
@@ -95,7 +95,7 @@ the other 2 blocks would apply
 
 When the old text isn't there, splice shows the nearest lines and the first one that differs, with tabs as `→` and spaces at the end of a line as `·`. If the new text is already there, it asks whether the block was applied already.
 
-Files are written to a temporary file next to them and renamed into place, keeping their mode; a symlink stays a symlink. A file that changed on disk while splice ran isn't overwritten.
+Every changed file is first written to a temporary file next to it, and only when all of them are written are they renamed into place. So a file that changed on disk while splice ran, or a folder splice can't write to, stops the whole batch with nothing written. Modes are kept (setuid and setgid bits too), a symlink stays a symlink, and a file reached two ways (through a symlinked folder, or a hard link) is edited as one file. In a file with mixed line endings, lines that end in `\r\n` keep it.
 
 ### The report
 
