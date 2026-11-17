@@ -230,12 +230,52 @@ was written, 2 bad input (unreadable edits, a broken block, bad flags).
 belongs in `prism/report` like every tool's result, so it waits for a prism
 release; v0.1 has text output only.
 
+## Renaming a word
+
+`splice --rename OLD NEW PLACE...` came second. In the same month of
+transcripts agents ran `sed -i` 2,303 times, 478 of them with `/g`: replace
+every match in these files. sed says nothing about what it hit, so a match
+that wasn't meant (the line of a script that copies the file under its old
+name) is noticed several commands later, or not at all. A block with
+`SEARCH all` has the same blind spot for a word: it reports the definitions
+that changed, not the lines.
+
+The rename is still a replacement of exact text. What it adds:
+
+- **Places on the command line**, not blocks: files, folders and refs. A
+  folder is the files git sees below it (tracked and untracked, not
+  ignored), or every file outside `.git` when there is no repository; files
+  without the word, binary files and links (which may lead out of the
+  folder) aren't opened. A ref is resolved like a
+  block's header, by the same code.
+- **Whole words by default.** Where OLD starts or ends with a letter, a
+  digit or `_`, the character next to it mustn't be one. `sed`'s `s/speed/…/g`
+  also rewrites `max_speed`; here that takes `--inside-words`, and the
+  report counts what the whole-word rename left inside longer words, so
+  neither reading happens unseen.
+- **Every changed line is listed**, as it is now, under the definition that
+  owns it (the grouping the block report uses). Above 60 lines it counts
+  per definition; `--diff` lists all, old and new.
+- **`--not PLACE`** leaves out a file, a folder, a definition or lines. A
+  bare line number means that line, because the report numbers lines; in a
+  place, as in a header, it means the definition around it.
+- **A note when NEW was in the file already**: two names became one.
+- All places are read before anything changes, and occurrences are
+  collected by position in the unchanged files, so a file named twice (as
+  itself and through its folder) is renamed once, also when NEW contains
+  OLD. A place that fails, or no occurrence at all, writes nothing.
+
+It doesn't rename files and doesn't follow a name into files that weren't
+named: the `next:` line is the seek command that finds those.
+
 ## Not doing
 
 - **Regular-expression replacement.** 105 of the 6,294 Python edits used
   `re.sub`. A regex edit can't be checked the way an exact one can.
 - **Renaming a symbol across a repository.** That needs a real parser per
-  language (an LSP); prism's outline is deliberately not one.
+  language (an LSP); prism's outline is deliberately not one. `--rename`
+  renames a word, not a symbol: it can't tell two variables of one name
+  apart, which is why it lists every line.
 - **Fuzzy matching beyond whitespace.** A block whose words differ from the
   file is wrong; the nearest-match report helps fix it, splice doesn't guess.
 - **Whole-file writes.** The Write tool does that; splice creates a file only
