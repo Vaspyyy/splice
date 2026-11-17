@@ -15,11 +15,15 @@ import (
 	"golang.org/x/term"
 )
 
-const version = "0.1.2"
+const version = "0.2.0"
 
 type options struct {
 	dry, diff, plain bool
-	inputs           []string
+	inputs           []string // the files of blocks; for a rename, the places to rename in
+	rename           bool     // --rename: old and new are a word and what it becomes
+	old, new         string
+	inside           bool     // --inside-words: the old word inside longer words too
+	not              []string // --not: places a rename leaves alone
 }
 
 func main() {
@@ -43,6 +47,9 @@ func run(args []string, stdin io.Reader, stdinTTY bool, out *bufio.Writer, tty b
 	}
 	color := tty && !o.plain && os.Getenv("NO_COLOR") == ""
 	p := painter(color)
+	if o.rename {
+		return rename(o, out, p)
+	}
 
 	if len(o.inputs) == 0 {
 		if stdinTTY {
@@ -262,7 +269,8 @@ func (p painter) verb(verb, s string) string {
 func parse(args []string) (options, int, string) {
 	var o options
 	flags := true
-	for _, a := range args {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		switch {
 		case !flags || a == "-" || !strings.HasPrefix(a, "-"):
 			o.inputs = append(o.inputs, a)
@@ -278,9 +286,43 @@ func parse(args []string) (options, int, string) {
 			o.diff = true
 		case a == "-A":
 			o.plain = true
+		case a == "--rename":
+			// The two words are taken as they stand, a leading dash too.
+			if o.rename {
+				return o, 2, "--rename is there twice; one word per call"
+			}
+			if i+2 >= len(args) {
+				return o, 2, "--rename takes the old word, the new word, then where: splice --rename old_name new_name src/ main.go:run"
+			}
+			o.rename, o.old, o.new = true, args[i+1], args[i+2]
+			i += 2
+		case a == "--inside-words":
+			o.inside = true
+		case a == "--not":
+			if i+1 >= len(args) {
+				return o, 2, "--not takes a file, a folder or a ref (path:Name, path:12, path:80-120) that --rename leaves alone"
+			}
+			i++
+			o.not = append(o.not, args[i])
 		default:
 			return o, 2, fmt.Sprintf("unknown flag %s (splice -h lists them)", a)
 		}
+	}
+	if !o.rename {
+		if o.inside || len(o.not) > 0 {
+			return o, 2, "--inside-words and --not go with --rename"
+		}
+		return o, 0, ""
+	}
+	switch {
+	case o.old == "":
+		return o, 2, "--rename: the old word is empty"
+	case strings.ContainsAny(o.old+o.new, "\n\r"):
+		return o, 2, "--rename takes words, not lines: for text with line breaks, use a block"
+	case o.old == o.new:
+		return o, 2, "--rename: the new word is the same as the old"
+	case len(o.inputs) == 0:
+		return o, 2, fmt.Sprintf("--rename needs to know where: name files, folders or refs after the two words (splice --rename %s %s . for everything here)", o.old, o.new)
 	}
 	return o, 0, ""
 }

@@ -26,6 +26,7 @@ You'll need Go 1.26 or newer (older versions fetch the right toolchain on their 
 
 ```sh
 splice [flags] [EDITS...]
+splice [flags] --rename OLD NEW PLACE...
 ```
 
 splice reads blocks from standard input, or from the files named (`-` is standard input). In a shell, a quoted heredoc keeps the text exactly as written:
@@ -101,17 +102,55 @@ Every changed file is first written to a temporary file next to it, and only whe
 
 One header per file and one line per changed definition, so the path and the name join into a ref other tools take (`src/server.go:Server.run`). A definition's doc comment counts as part of it. Other changed lines show as `outside definitions L3-5`. A definition whose signature line changed gets a `next:` line with the seek command that lists its callers. A Go or JSON file that parsed before the edit and doesn't after gets a `check:` line with the error's location; it is written anyway, since the next block or command may fix it.
 
+### Renaming a word
+
+```sh
+splice --rename OLD NEW PLACE...
+```
+
+`sed -i 's/old/new/g'` changes every match and says nothing, so a match that wasn't meant is found later, if at all. `--rename` replaces a word in the places named and lists every line it changed, under the definition the line is in:
+
+```
+$ splice --rename luetzen breitenfeld levels scripts
+splice: luetzen → breitenfeld: 5 times on 5 lines in 2 files, written
+levels/luetzen.gd
+  func start_luetzen L6-8
+     5  # Starts the breitenfeld level.
+     8  print("breitenfeld", speed)
+  func stop L10-11
+    11  print("breitenfeld stopped")
+scripts/copy.sh
+  outside definitions
+    3  cp levels/breitenfeld.gd levels/luetzen_fast.gd
+    5  echo "breitenfeld done"
+note: inside longer words luetzen stays, 5 times, the first at levels/luetzen.gd:3; --inside-words renames those too
+next: seek luetzen   what still has the old name, in files not named here
+```
+
+Line 3 of `scripts/copy.sh` is the kind of hit that wasn't meant: the script copies the old file, which is still there under its old name. With `-n` the same report comes before anything is written, and `--not scripts/copy.sh:3` leaves that line alone.
+
+- **Places** are files, folders and refs, at least one (`.` for everything here). A folder stands for the files git sees below it, tracked and untracked but not ignored; outside a repository, for every file but those in `.git`. Of a folder's files, those without the word, binary files and links are passed over. A ref (`main.go:run`, `main.go:80-120`) renames inside that definition or those lines; as in a header, `main.go:104` is the definition around line 104.
+- **A word of its own.** `speed` isn't renamed in `max_speed`, `speedy` or `speed2`: where the old word starts or ends with a letter, a digit or `_`, there must be no such character next to it. A note says how often it was left inside longer words, and `--inside-words` renames those too. Upper and lower case always count.
+- **`--not PLACE`** leaves a file, a folder, a definition, a line (`build.sh:12` is line 12 here, the way the report numbers lines) or lines alone, as often as needed. Each one says how many occurrences it left out; one that names something that isn't there fails the rename.
+- **All or nothing**, as with blocks: a place that doesn't exist or a ref that names no definition stops the rename with nothing written. So does a word that occurs nowhere (exit code 1).
+- **Notes.** When the new word was in a file before, the report says on which lines: after the rename the two are one name. More than 60 changed lines are counted per definition instead of listed; `--diff` lists every one, as it was and as it is.
+
+It replaces text, not symbols: it doesn't know which `speed` is which variable, in comments and strings it renames too, and it doesn't rename files. That is why it shows its lines.
+
 ### Flags
 
 | Flag | |
 | --- | --- |
 | `-n`, `--dry-run` | check and report, write nothing |
-| `--diff` | also print each block's old and new lines |
+| `--diff` | also print each block's old and new lines; for a rename, each changed line as it was and as it is |
+| `--rename OLD NEW` | replace a word in the places named after it |
+| `--inside-words` | with `--rename`: inside longer words too |
+| `--not PLACE` | with `--rename`: leave this file, folder or ref alone |
 | `-A` | plain output without colors (the default when not on a terminal) |
 | `-h`, `--help` | help |
 | `-V`, `--version` | version |
 
-Exit code: 0 when every block applied, 1 when a block failed (nothing was written), 2 for bad input.
+Exit code: 0 when every block applied, 1 when a block failed or a rename found nothing (nothing was written), 2 for bad input.
 
 ## For coding agents
 

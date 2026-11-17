@@ -134,7 +134,24 @@ func (s *session) apply(b *block) {
 		return
 	}
 
-	// the scope: the whole file, a definition or some lines
+	sc, ok := s.scope(f, b, r)
+	if ok {
+		s.applyIn(f, b, r, sc)
+	}
+}
+
+// scopeOf is where a header's ref points in a file's buffer.
+type scopeOf struct {
+	lo, hi  int          // the bytes [lo, hi) of the buffer
+	name    string       // as a ref, "" for the whole file
+	def     *ref.Target  // the definition it names, if it names one
+	targets []ref.Target // the file's definitions, when the ref needed them
+	whole   *lineIndex   // the buffer's lines
+}
+
+// scope works out the part of f that b's header r names: the whole file, a
+// definition or some lines. When it can't, the block has failed.
+func (s *session) scope(f *file, b *block, r ref.Ref) (sc scopeOf, ok bool) {
 	lo, hi := 0, len(f.buf)
 	scopeName := ""
 	var targets []ref.Target // the file's definitions, read only when a block needs them
@@ -175,7 +192,7 @@ func (s *session) apply(b *block) {
 				s.fail(b, fmt.Sprintf("%s has %s; the header's line %d isn't there", f.rel, plural(whole.count(), "line"), r.Line))
 				return
 			}
-			f.note(fmt.Sprintf("block %d: line %d is outside any definition, so the whole file was searched", b.N, r.Line))
+			f.note(fmt.Sprintf("%s: line %d is outside any definition, so the whole file was searched", b.tag(), r.Line))
 		case len(idx) == 0 && lineLike(r.Name):
 			s.fail(b, fmt.Sprintf("%q isn't a line or a range in %s: lines start at 1 (path:104, path:80-120)", b.Header, f.rel))
 			return
@@ -199,7 +216,13 @@ func (s *session) apply(b *block) {
 			scopeName = refOf(targets, idx[0])
 		}
 	}
+	return scopeOf{lo, hi, scopeName, def, targets, whole}, true
+}
 
+// applyIn runs a block that changes text inside the scope its header
+// names.
+func (s *session) applyIn(f *file, b *block, r ref.Ref, sc scopeOf) {
+	lo, hi, scopeName, def, targets, whole := sc.lo, sc.hi, sc.name, sc.def, sc.targets, sc.whole
 	if !b.HasOld { // replace the whole definition
 		if def == nil {
 			s.fail(b, fmt.Sprintf("the old text is empty: that replaces a whole definition, but %q names lines, not a definition", b.Header))

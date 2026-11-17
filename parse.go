@@ -24,10 +24,22 @@ type block struct {
 	New    string
 	HasOld bool // Old has at least one line (an empty line counts)
 	HasNew bool
+	Arg    bool // not a block of the input: a place named on the command line (--rename)
+}
+
+// tag names a block in a note: "block 2", or the place itself.
+func (b *block) tag() string {
+	if b.Arg {
+		return b.Header
+	}
+	return fmt.Sprintf("block %d", b.N)
 }
 
 // where names a block for messages: "block 2 (src/pty.rs, line 14)".
 func (b *block) where() string {
+	if b.Arg {
+		return b.Header
+	}
 	at := fmt.Sprintf("line %d", b.Line)
 	if b.Src != "" {
 		at = fmt.Sprintf("%s:%d", b.Src, b.Line)

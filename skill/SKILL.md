@@ -1,6 +1,6 @@
 ---
 name: splice
-description: Edit files with `splice` instead of inline Python (`s.replace(old, new)` with asserts), `sed -i`, or a row of Edit calls whenever you make more than one replacement, in one file or several. It takes SEARCH/REPLACE blocks in a quoted heredoc, checks all of them before writing anything (all or nothing), refuses old text that is missing or not unique and says where the nearest text differs or lists every occurrence, and reports which definitions changed. A header like `main.go:run` limits a block to one definition, and an empty SEARCH with such a header replaces the whole definition. Use it for any batch of edits.
+description: Edit files with `splice` instead of inline Python (`s.replace(old, new)` with asserts), `sed -i`, or a row of Edit calls whenever you make more than one replacement, in one file or several. It takes SEARCH/REPLACE blocks in a quoted heredoc, checks all of them before writing anything (all or nothing), refuses old text that is missing or not unique and says where the nearest text differs or lists every occurrence, and reports which definitions changed. A header like `main.go:run` limits a block to one definition, and an empty SEARCH with such a header replaces the whole definition. To rename a word in many places, use `splice --rename OLD NEW <files, folders or refs>` instead of `sed -i 's/old/new/g'`: it matches whole words, lists every changed line under its definition so a hit that wasn't meant shows at once, and `--not path:line` leaves one out. Use it for any batch of edits.
 ---
 
 # splice for agents
@@ -43,7 +43,8 @@ A header line, then `<<<<<<< SEARCH`, the old text, `=======`, the new text, `>>
 | One small replacement in a file you just read | the Edit tool is fine; splice works too |
 | Rewrite one function, method or section whole | splice with a ref header and an empty SEARCH |
 | A new file | splice with the new path and an empty SEARCH, or the Write tool |
-| Rename across a codebase, regex rewrites | not splice: it does exact text only |
+| Rename a word in many places (what `sed -i 's/old/new/g'` does) | `splice --rename old new <files, folders, refs>`: it lists every changed line |
+| Regex rewrites | not splice: it does exact text only |
 
 splice doesn't need the file to have been read with the read tool, but it needs the exact old text. Take it from `seek -s Name`, `seek path:Name` or a read, not from memory.
 
@@ -69,6 +70,36 @@ A ref header is the easy way to make a common line unique: `return nil` occurs f
 If the old text isn't there exactly, splice tries again ignoring spaces at line ends, then with all lines' indentation shifted by the same amount (the new text is shifted too). It says so in a `note:` line.
 
 **Marker lines in the text**: if the old or new text contains lines like `=======` or `<<<<<<< SEARCH` (a test or doc about this format, a merge conflict), use longer markers for that block, all three the same length: `<<<<<<<<< SEARCH`, `=========`, `>>>>>>>>> REPLACE`.
+
+## Renaming a word
+
+`splice --rename OLD NEW PLACE...` replaces a word in the places named and lists every changed line under its definition. Use it instead of `sed -i 's/old/new/g'`, which says nothing about what it hit.
+
+```
+$ splice -n --rename luetzen breitenfeld levels scripts
+splice: luetzen → breitenfeld: 5 times on 5 lines in 2 files, checked, nothing written
+levels/luetzen.gd
+  func start_luetzen L6-8
+     5  # Starts the breitenfeld level.
+     8  print("breitenfeld", speed)
+  func stop L10-11
+    11  print("breitenfeld stopped")
+scripts/copy.sh
+  outside definitions
+    3  cp levels/breitenfeld.gd levels/luetzen_fast.gd
+    5  echo "breitenfeld done"
+note: inside longer words luetzen stays, 5 times, the first at levels/luetzen.gd:3; --inside-words renames those too
+next: seek luetzen   what still has the old name, in files not named here
+```
+
+- **Read every listed line.** That is the point: a line that shouldn't have changed (here line 3 of `scripts/copy.sh`, which copies the file that still has its old name) is in front of you. Run it with `-n` first when the word is common, then again without `-n`, with `--not scripts/copy.sh:3` for what must stay.
+- **Places**: files, folders (the files git sees below them; `.` for everything here) and refs (`main.go:run`, `main.go:80-120`). At least one.
+- **Whole words only**: `speed` isn't renamed in `max_speed` or `speedy`. The `note: inside longer words … stays` line says how many were left; if you meant those too, add `--inside-words`.
+- **`--not PLACE`**, as often as needed: a file, a folder, a definition (`main.go:run`), a line (`build.sh:12`) or lines (`build.sh:10-14`) to leave alone.
+- **`note: NEW was here already`**: the new word was in the file before, so two different names may now be one. Look at the lines it names.
+- More than 60 changed lines are only counted per definition; add `--diff` to list them all.
+- It is text replacement, not a refactoring: it renames in comments and strings too, doesn't rename files, and other files that use the name stay as they were (`next: seek OLD` finds them).
+- Nothing found, or a place that doesn't exist: exit code 1 and nothing written.
 
 ## When a block fails
 

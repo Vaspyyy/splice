@@ -53,6 +53,20 @@ var helpAfter = []struct {
 	title string
 	paras []string
 }{
+	{"RENAME", []string{
+		`splice --rename OLD NEW PLACE... replaces a word wherever it stands in
+the places named: files, folders (every file git sees below them) and
+refs (main.go:run). It lists every changed line under its definition, so
+a hit that wasn't meant shows at once. It is a replacement of text, not
+of a symbol: it doesn't know what a name means where.`,
+		`OLD counts only as a word of its own: speed isn't renamed inside
+max_speed or speedy, and a note says how often it was left that way.
+--inside-words renames those too. --not PLACE leaves a file, a folder, a
+definition (main.go:run), a line (build.sh:12) or lines alone.`,
+		`Check first with -n. More than 60 changed lines are counted per
+definition instead of listed; --diff lists every one, as it was and as
+it is.`,
+	}},
 	{"ALL OR NOTHING", []string{
 		`Every block is checked before anything is written. If one fails,
 nothing is written, and each failed block says why: where the nearest
@@ -74,6 +88,9 @@ var helpSections = []struct {
 	{"FLAGS", []helpFlag{
 		{"-n", "--dry-run", "", "check and report, write nothing"},
 		{"", "--diff", "", "also print each block's old and new lines"},
+		{"", "--rename", "OLD NEW", "replace a word in the places named after it"},
+		{"", "--inside-words", "", "with --rename: inside longer words too"},
+		{"", "--not", "PLACE", "with --rename: leave this file, folder or ref alone"},
 		{"-A", "", "", "plain output without colors (the default when not on a terminal)"},
 		{"-h", "--help", "", "show this help"},
 		{"-V", "--version", "", "show the version"},
@@ -83,10 +100,12 @@ var helpSections = []struct {
 var helpExamples = []helpPair{
 	{"splice <<'EOF' ... EOF", "apply the blocks in the heredoc"},
 	{"splice -n edits.txt", "check the blocks in a file, write nothing"},
+	{"splice -n --rename old_name new_name src/", "show what a rename would change"},
+	{"splice --rename old_name new_name . --not build.sh:12", "rename everywhere here but on that line"},
 }
 
 var helpNotes = []helpPair{
-	{"exit code", "0 applied, 1 a block failed (nothing written), 2 bad input"},
+	{"exit code", "0 applied, 1 a block failed or nothing to rename (nothing written), 2 bad input"},
 	{"NO_COLOR", "set it to turn colors off"},
 }
 
@@ -118,6 +137,7 @@ func helpText(color bool) string {
 
 	section("USAGE")
 	fmt.Fprintf(&b, "    splice %s %s\n", paint(hDim, "[flags]"), paint(hDim, "[EDITS...]"))
+	fmt.Fprintf(&b, "    splice %s --rename %s\n", paint(hDim, "[flags]"), paint(hDim, "OLD NEW PLACE..."))
 
 	prose := func(title string, paras []string) {
 		section(title)
